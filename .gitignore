@@ -1,0 +1,15 @@
+results/models/
+results/logs/
+results/figures/
+results/flow-monitor.xml
+__pycache__/
+*.pyc
+*.pyo
+*.o
+*.so
+*.a
+build/
+.ns3rc
+cmake_install.cmake
+CMakeCache.txt
+Makefile

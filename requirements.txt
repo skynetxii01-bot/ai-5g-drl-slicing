@@ -1,0 +1,9 @@
+torch>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+scipy>=1.10.0
+pyyaml>=6.0
+protobuf==3.20.3
+# gym MUST be exactly 0.21.0 — ns3-gym breaks with any other version
+# ALWAYS install this LAST
+gym==0.21.0
