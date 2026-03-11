@@ -1,0 +1,20 @@
+gnb_count: 1
+embb_ues: 10
+urllc_ues: 5
+mmtc_ues: 20
+carrier_freq: 3.5e9
+bandwidth: 20e6
+numerology: 1
+total_prbs: 25
+sim_time: 100
+gym_step: 0.1
+gym_port: 5555
+reward:
+  alpha: 0.5
+  beta: 0.3
+  gamma: 0.2
+  kappa: 2.0
+sla:
+  embb: {min_thr_mbps: 10, max_lat_ms: 50, max_loss: 0.01}
+  urllc: {min_thr_mbps: 1, max_lat_ms: 1, max_loss: 0.001}
+  mmtc: {min_thr_mbps: 0.1, max_lat_ms: 500, max_loss: 0.05}

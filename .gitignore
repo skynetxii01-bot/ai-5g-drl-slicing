@@ -1,3 +1,8 @@
-# Ignore ns-3 source
-ns3/ns-3.45
 build/
+results/models/
+results/logs/
+results/figures/
+__pycache__/
+*.pyc
+*.o
+*.so
