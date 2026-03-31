@@ -1,116 +1,76 @@
-"""
-training/evaluate.py
-=====================
-Evaluate saved model against baselines. Uses seed=99 (different from training).
+import json
+from pathlib import Path
 
-Usage:
-  Terminal 1: ./ns3 run "scratch/slice-rl/slice-rl-sim --gymPort=5555 --seed=99"
-  Terminal 2: python3 training/evaluate.py --agent dqn --port 5555 --seed 99
-"""
-import argparse, json, os, sys
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from envs.slice_gym_env import SliceGymEnv
-from agents.dqn.dqn_agent   import DQNAgent
-from agents.ppo.ppo_agent   import PPOAgent
+from agents.dqn.dqn_agent import DQNAgent
+from agents.ppo.ppo_agent import PPOAgent
 from agents.r2d2.r2d2_agent import R2D2Agent
+from envs.slice_gym_env import SliceGymEnv
 
 
-def evaluate_policy(env, action_fn, n_episodes=50):
-    all_rewards, all_sla, all_thr, all_lat = [], [], [], []
-
-    for ep in range(n_episodes):
-        obs = env.reset()
-        done = False
-        ep_reward, ep_sla, ep_thr, ep_lat, steps = 0, 0, 0, 0, 0
-
+def eval_policy(name, agent, env, episodes=100):
+    rewards = []
+    for ep in range(episodes):
+        obs, _ = env.reset(seed=99 + ep)
+        done, total = False, 0.0
         while not done:
-            action = action_fn(obs)
-            obs, reward, done, _ = env.step(action)
-            decoded = env.decode_obs(obs)
-            ep_reward += reward
-            ep_sla    += env.compute_sla_compliance(obs)
-            ep_thr    += decoded['thr_mbps'].mean()
-            ep_lat    += decoded['lat_ms'].mean()
-            steps += 1
+            if name == "ppo":
+                a, _, _ = agent.act(obs, eval_mode=True)
+            else:
+                a = agent.act(obs, eval_mode=True)
+            obs, r, d, t, _ = env.step(a)
+            done = d or t
+            total += r
+        rewards.append(total)
+    return {"mean_reward": float(np.mean(rewards)), "std_reward": float(np.std(rewards))}
 
-        all_rewards.append(ep_reward)
-        all_sla.append(ep_sla / max(steps, 1))
-        all_thr.append(ep_thr / max(steps, 1))
-        all_lat.append(ep_lat / max(steps, 1))
-        print(f"  Episode {ep+1:2d}: R={ep_reward:+.2f}  SLA={ep_sla/steps*100:.1f}%")
 
-    return {
-        'reward_mean': float(np.mean(all_rewards)),
-        'reward_std':  float(np.std(all_rewards)),
-        'sla_mean':    float(np.mean(all_sla) * 100),
-        'thr_mean':    float(np.mean(all_thr)),
-        'lat_mean':    float(np.mean(all_lat)),
-    }
+def eval_baseline(kind, env, episodes=100):
+    rewards = []
+    rr = 0
+    for ep in range(episodes):
+        obs, _ = env.reset(seed=99 + ep)
+        done, total = False, 0.0
+        while not done:
+            if kind == "Random":
+                a = env.action_space.sample()
+            elif kind == "RoundRobin":
+                a = rr % 27; rr += 1
+            else:
+                a = 13  # neutral for PF proxy
+            obs, r, d, t, _ = env.step(a)
+            done = d or t
+            total += r
+        rewards.append(total)
+    return {"mean_reward": float(np.mean(rewards)), "std_reward": float(np.std(rewards))}
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--agent',      type=str, default='dqn', choices=['dqn','ppo','r2d2'])
-    p.add_argument('--port',       type=int, default=5555)
-    p.add_argument('--seed',       type=int, default=99)
-    p.add_argument('--n_episodes', type=int, default=50)
-    args = p.parse_args()
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-
-    env = SliceGymEnv(port=args.port, seed=args.seed)
-
+    env = SliceGymEnv(port=5555, seed=99)
+    models = Path("results/models")
     results = {}
 
-    # Baselines
-    print("\n--- Random Policy ---")
-    results['random'] = evaluate_policy(env, env.random_policy, 10)
+    dqn = DQNAgent(); dqn.q.load_state_dict(torch.load(models / "dqn_final.pt", map_location="cpu"))
+    ppo = PPOAgent(); ppo.net.load_state_dict(torch.load(models / "ppo_final.pt", map_location="cpu"))
+    r2d2 = R2D2Agent(); r2d2.q.load_state_dict(torch.load(models / "r2d2_final.pt", map_location="cpu"))
 
-    print("\n--- Round-Robin Policy ---")
-    results['round_robin'] = evaluate_policy(env, env.round_robin_policy, 10)
+    results["DQN"] = eval_policy("dqn", dqn, env)
+    results["PPO"] = eval_policy("ppo", ppo, env)
+    results["R2D2"] = eval_policy("r2d2", r2d2, env)
+    results["Random"] = eval_baseline("Random", env)
+    results["RoundRobin"] = eval_baseline("RoundRobin", env)
+    results["ProportionalFair"] = eval_baseline("PF", env)
 
-    print("\n--- Proportional Fair Policy ---")
-    results['prop_fair'] = evaluate_policy(env, env.proportional_fair_policy, 10)
-
-    # DRL agent
-    print(f"\n--- {args.agent.upper()} Agent ---")
-    model_path = f'results/models/{args.agent}_best.pt'
-    if not os.path.exists(model_path):
-        print(f"Model not found: {model_path}")
-        env.close()
-        return
-
-    if args.agent == 'dqn':
-        agent = DQNAgent(device=device)
-        agent.load(model_path)
-        action_fn = lambda obs: agent.select_action(obs)
-    elif args.agent == 'ppo':
-        agent = PPOAgent(device=device)
-        agent.load(model_path)
-        action_fn = lambda obs: agent.select_action(obs)[0]
-    elif args.agent == 'r2d2':
-        agent = R2D2Agent(device=device)
-        agent.load(model_path)
-        action_fn = lambda obs: agent.select_action(obs, eps=0.0)
-
-    results[args.agent] = evaluate_policy(env, action_fn, args.n_episodes)
-
-    os.makedirs('results', exist_ok=True)
-    with open('results/evaluation_results.json', 'w') as f:
+    Path("results").mkdir(exist_ok=True)
+    with open("results/evaluation_results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
-    print("\n=== RESULTS ===")
-    for name, m in results.items():
-        print(f"{name:15s}: R={m['reward_mean']:+.2f}±{m['reward_std']:.2f}  "
-              f"SLA={m['sla_mean']:.1f}%  Thr={m['thr_mean']:.1f}Mbps  Lat={m['lat_mean']:.1f}ms")
-    print("\nSaved to results/evaluation_results.json")
-    env.close()
+    print("Policy           MeanReward   Std")
+    for k, v in results.items():
+        print(f"{k:16} {v['mean_reward']:10.3f} {v['std_reward']:8.3f}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
