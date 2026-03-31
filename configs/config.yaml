@@ -1,48 +1,27 @@
-gnb_count: 1
-embb_ues: 10
-urllc_ues: 5
-mmtc_ues: 20
-carrier_freq: 3.5e9
-bandwidth: 20.0e6
-numerology: 1
-total_prbs: 25
-sim_time: 100.0
-gym_step: 0.1
-gym_port: 5555
-reward:
-  alpha: 0.5
-  beta: 0.3
-  gamma: 0.2
-  kappa: 2.0
-sla:
-  embb:  {min_thr_mbps: 10.0,  max_lat_ms: 50.0,  max_loss: 0.01}
-  urllc: {min_thr_mbps: 1.0,   max_lat_ms: 1.0,   max_loss: 0.001}
-  mmtc:  {min_thr_mbps: 0.1,   max_lat_ms: 500.0, max_loss: 0.05}
-training:
-  seed: 42
-  eval_seed: 99
-  episodes: 500
-  save_every: 50
-  batch_size: 64
-dqn:
-  lr: 0.001
-  gamma: 0.99
-  tau: 0.005
-  buffer_cap: 50000
-  eps_start: 1.0
-  eps_end: 0.01
-  eps_decay: 20000
-ppo:
-  lr: 0.0003
-  gamma: 0.99
-  lam: 0.95
-  clip: 0.2
-  n_steps: 2048
-  epochs: 4
-r2d2:
-  lr: 0.0001
-  gamma: 0.99
-  seq_len: 40
-  burn_in: 40
-  n_step: 5
-  buffer_cap: 10000
+env:
+  total_prbs: 25
+  step_interval_s: 0.1
+  episode_steps: 1000
+  seed_train: 42
+  seed_eval: 99
+
+agents:
+  dqn:
+    lr: 0.001
+    gamma: 0.99
+    batch_size: 64
+    buffer_size: 50000
+    tau: 0.005
+  ppo:
+    lr: 0.0003
+    gamma: 0.99
+    lambda_gae: 0.95
+    eps_clip: 0.2
+    n_steps: 2048
+  r2d2:
+    lr: 0.0001
+    gamma: 0.99
+    batch_size: 32
+    seq_len: 40
+    burn_in: 40
+    n_step: 5
