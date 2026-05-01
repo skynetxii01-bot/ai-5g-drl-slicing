@@ -1,106 +1,121 @@
-#ifndef SLICE_ENV_H
-#define SLICE_ENV_H
+#pragma once
+
+#if __has_include("ns3/opengym-module.h")
+#define HAVE_OPENGYM
 
 #include "ns3/core-module.h"
-#include "ns3/opengym-module.h"
 #include "ns3/flow-monitor-module.h"
+#include "ns3/network-module.h"
 #include "ns3/nr-module.h"
-#include "ns3/net-device-container.h"
+#include "ns3/opengym-module.h"
 
 #include <array>
+#include <limits>
 #include <unordered_map>
 
-namespace ns3 {
+namespace ns3
+{
 
 class NrSliceGymEnv : public OpenGymEnv
 {
-public:
-  static TypeId GetTypeId();
-  NrSliceGymEnv();
-  ~NrSliceGymEnv() override;
+  public:
+    static constexpr uint32_t kSliceCount = 3;
+    static constexpr uint32_t kObsSize = 15;
+    static constexpr uint32_t kActionCount = 27;
 
-  struct SimConfig
-  {
-    uint32_t totalPrbs{25};
-    double simTimeS{100.0};
-    double stepS{0.1};
-    uint32_t maxUes{35};
-    std::array<uint32_t, 3> initPrb{{10, 8, 7}};
-    std::array<double, 3> maxThrMbps{{100.0, 10.0, 2.0}};
-    std::array<double, 3> maxLatMs{{50.0, 10.0, 500.0}};
-    uint32_t maxSteps{1000};
-  };
+    enum SliceId : uint8_t
+    {
+        EMBB = 0,
+        URLLC = 1,
+        MMTC = 2
+    };
 
-  void Initialize(const SimConfig &cfg,
-                  Ptr<NrHelper> nrHelper,
-                  const NetDeviceContainer &gnbDevs,
-                  const std::array<NetDeviceContainer, 3> &ueDevsBySlice);
+    struct Config
+    {
+        uint16_t totalPrbs{25};
+        Time stepInterval{MilliSeconds(100)};
+        Time simTime{Seconds(100)};
+        std::array<uint16_t, kSliceCount> initialPrbAlloc{10, 8, 7};
+        std::array<uint32_t, kSliceCount> maxUes{10, 5, 20};
+        std::array<double, kSliceCount> maxThrMbps{100.0, 10.0, 2.0};
+        std::array<double, kSliceCount> maxLatMs{100.0, 10.0, 1000.0};
+        std::array<double, kSliceCount> minThrMbps{10.0, 1.0, 0.1};
+    };
 
-  void BuildImsiSliceMap();
-  void AttachFlowMonitor(Ptr<FlowMonitor> fm);
+    NrSliceGymEnv();
+    ~NrSliceGymEnv() override;
 
-  void OnSchedulerNotify(const std::vector<NrMacSchedulerUeInfoAi::LcObservation> &obs,
-                         bool gameOver,
-                         float reward,
-                         const std::string &extra,
-                         const NrMacSchedulerUeInfoAi::UpdateAllUeWeightsFn &updateFn);
+    static TypeId GetTypeId();
 
-  // OpenGymEnv implementation
-  Ptr<OpenGymSpace> GetObservationSpace() override;
-  Ptr<OpenGymSpace> GetActionSpace() override;
-  Ptr<OpenGymDataContainer> GetObservation() override;
-  float GetReward() override;
-  bool GetGameOver() override;
-  std::string GetExtraInfo() override;
-  bool ExecuteActions(Ptr<OpenGymDataContainer> action) override;
+    void Initialize(const Config& cfg,
+                    const Ptr<NrHelper>& nrHelper,
+                    const NetDeviceContainer& gnbDevs,
+                    const std::array<NetDeviceContainer, kSliceCount>& ueDevsBySlice);
 
-private:
-  enum SliceId : uint8_t
-  {
-    EMBB = 0,
-    URLLC = 1,
-    MMTC = 2
-  };
+    void SetFlowMonitor(const Ptr<FlowMonitor>& flowMonitor,
+                        const Ptr<Ipv4FlowClassifier>& flowClassifier);
 
-  struct SliceMetrics
-  {
-    double thrMbps{0.0};
-    double latMs{0.0};
-    double queueOcc{0.0};
-    double loss{0.0};
-    uint32_t ueCount{0};
-    uint32_t packets{0};
-  };
+    void BuildImsiSliceMap();
 
-  void ScheduleStep();
-  void AggregateFlowStats();
-  void UpdateRewardAndDone();
-  void ApplySliceWeights();
-  void EnforceConstraints();
-  void BuildRntiToSliceMapLazily();
-  std::array<int32_t, 3> DecodeAction(uint32_t actionId) const;
-  double JainIndex(const std::array<double, 3> &x) const;
+    void OnSchedulerNotify(const std::vector<NrMacSchedulerUeInfoAi::LcObservation>& observations,
+                           bool isGameOver,
+                           float reward,
+                           const std::string& extraInfo,
+                           const NrMacSchedulerUeInfoAi::UpdateAllUeWeightsFn& updateWeightsFn);
 
-  SimConfig m_cfg;
-  Ptr<NrHelper> m_nrHelper;
-  NetDeviceContainer m_gnbDevs;
-  std::array<NetDeviceContainer, 3> m_ueDevsBySlice;
+    // OpenGymEnv API
+    Ptr<OpenGymSpace> GetActionSpace() override;
+    Ptr<OpenGymSpace> GetObservationSpace() override;
+    bool GetGameOver() override;
+    Ptr<OpenGymDataContainer> GetObservation() override;
+    float GetReward() override;
+    std::string GetExtraInfo() override;
+    bool ExecuteActions(Ptr<OpenGymDataContainer> action) override;
 
-  Ptr<FlowMonitor> m_flowMonitor;
+  private:
+    void ScheduleStep();
+    void AggregateFlowStats();
+    void ApplySliceWeights();
+    void EnforceConstraints();
 
-  std::unordered_map<uint64_t, SliceId> m_imsiToSlice;
-  std::unordered_map<uint16_t, SliceId> m_rntiToSlice;
-  NrMacSchedulerUeInfoAi::UpdateAllUeWeightsFn m_updateWeightsFn;
+    uint8_t ResolveSliceFromPort(uint16_t port) const;
+    void TryBuildRntiSliceMap();
 
-  std::array<uint32_t, 3> m_prbAlloc;
-  std::array<SliceMetrics, 3> m_metrics;
+    Config m_cfg{};
 
-  float m_lastReward{0.0f};
-  bool m_gameOver{false};
-  std::string m_extraInfo;
-  uint32_t m_stepCounter{0};
+    Ptr<NrHelper> m_nrHelper;
+    NetDeviceContainer m_gnbDevs;
+    std::array<NetDeviceContainer, kSliceCount> m_ueDevsBySlice;
+
+    Ptr<FlowMonitor> m_flowMonitor;
+    Ptr<Ipv4FlowClassifier> m_flowClassifier;
+
+    std::unordered_map<uint64_t, uint8_t> m_imsiToSlice;
+    std::unordered_map<uint16_t, uint8_t> m_rntiToSlice;
+    std::unordered_map<uint32_t, uint64_t> m_prevRxPackets{};
+    std::unordered_map<uint32_t, double>   m_prevDelaySum{};
+
+    bool m_rntiMapReady{false};
+    bool m_gameOver{false};
+    bool m_initialized{false};
+    uint32_t m_stepCount{0};
+
+    float m_reward{0.0F};
+    std::string m_extraInfo;
+
+    NrMacSchedulerUeInfoAi::UpdateAllUeWeightsFn m_updateWeightsFn;
+    std::vector<NrMacSchedulerUeInfoAi::LcObservation> m_lastLcObservations;
+
+    std::array<uint16_t, kSliceCount> m_prbAlloc{10, 8, 7};
+    std::array<float, kObsSize> m_observation{};
+
+    std::array<double, kSliceCount> m_thrMbps{};
+    std::array<double, kSliceCount> m_latMs{};
+    std::array<double, kSliceCount> m_queueOcc{};
+    std::array<uint32_t, kSliceCount> m_uesPerSlice{};
+    std::unordered_map<uint32_t, uint64_t> m_prevRxBytes{};
 };
 
 } // namespace ns3
 
-#endif
+#endif // HAVE_OPENGYM
