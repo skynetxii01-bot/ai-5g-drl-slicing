@@ -54,12 +54,15 @@ def load_config(path: Path) -> Dict[str, Any]:
 def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
     max_thr = cfg["env"]["max_thr_mbps"]
     min_thr = cfg["env"]["min_thr_mbps"]
+    max_lat = cfg["env"]["max_lat_ms"]
     sat = 0
     for s in SLICE_NAMES:
         thr = float(decoded_obs["throughput"][s]) * float(max_thr[s])
         lat_norm = float(decoded_obs["latency"][s])
         mmtc_inactive = (s == "mMTC" and thr < 0.001)
-        if mmtc_inactive or (thr >= float(min_thr[s]) and lat_norm < 0.5):
+        if mmtc_inactive or (
+            thr >= float(min_thr[s]) and lat_ms <= float(max_lat[s])
+        ):
             sat += 1
     return sat / len(SLICE_NAMES)
 
