@@ -1,20 +1,43 @@
+"""Dueling Double-DQN network for 15-dim observation and 27 actions."""
+
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 
 
 class DuelingDQN(nn.Module):
-    def __init__(self, state_dim=15, action_dim=27):
-        super().__init__()
-        self.backbone = nn.Sequential(
-            nn.Linear(state_dim, 256), nn.LayerNorm(256), nn.ReLU(),
-            nn.Linear(256, 256), nn.LayerNorm(256), nn.ReLU(),
-            nn.Linear(256, 128), nn.ReLU(),
-        )
-        self.value = nn.Sequential(nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, 1))
-        self.adv = nn.Sequential(nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, action_dim))
+    """Input(15) -> [256, 256, 128] with dueling heads -> Output(27)."""
 
-    def forward(self, x):
-        z = self.backbone(x)
-        v = self.value(z)
-        a = self.adv(z)
-        return v + a - a.mean(dim=-1, keepdim=True)
+    def __init__(self, obs_dim: int = 15, action_dim: int = 27) -> None:
+        super().__init__()
+
+        self.feature = nn.Sequential(
+            nn.Linear(obs_dim, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+        )
+
+        self.value_stream = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
+
+        self.adv_stream = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feats = self.feature(x)
+        value = self.value_stream(feats)
+        adv = self.adv_stream(feats)
+        q = value + adv - adv.mean(dim=1, keepdim=True)
+        return q
