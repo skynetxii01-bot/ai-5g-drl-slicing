@@ -405,7 +405,7 @@ NrSliceGymEnv::AggregateFlowStats()
     }
 
     const auto stats = m_flowMonitor->GetFlowStats();
-    std::array<uint32_t, kSliceCount> packetsPerSlice{0, 0, 0};
+    
     std::array<uint32_t, kSliceCount> flowsPerSlice{0, 0, 0};
     std::array<double, kSliceCount> totalDeltaDelayMs{0.0, 0.0, 0.0};
     std::array<uint64_t, kSliceCount> totalDeltaPkts{0, 0, 0};
