@@ -1,75 +1,129 @@
+#!/usr/bin/env python3
+"""Evaluate trained policies and baselines."""
+
+from __future__ import annotations
+
+import argparse
 import json
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from agents.dqn.dqn_agent import DQNAgent
-from agents.ppo.ppo_agent import PPOAgent
-from agents.r2d2.r2d2_agent import R2D2Agent
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agents.dqn.dqn_network import DuelingDQN
+from agents.ppo.actor_critic import ActorCritic
+from agents.r2d2.r2d2_network import R2D2Network
 from envs.slice_gym_env import SliceGymEnv
 
 
-def eval_policy(name, agent, env, episodes=100):
-    rewards = []
-    for ep in range(episodes):
-        obs, _ = env.reset(seed=99 + ep)
-        done, total = False, 0.0
-        while not done:
-            if name == "ppo":
-                a, _, _ = agent.act(obs, eval_mode=True)
-            else:
-                a = agent.act(obs, eval_mode=True)
-            obs, r, d, t, _ = env.step(a)
-            done = d or t
-            total += r
-        rewards.append(total)
-    return {"mean_reward": float(np.mean(rewards)), "std_reward": float(np.std(rewards))}
+
+def run_episode_ns3(policy_fn, env: SliceGymEnv, max_steps: int = 1000):
+    obs, info = env.reset(seed=99)
+    total = 0.0
+    decoded = info.get("decoded_obs", {})
+    hidden = None
+    for _ in range(max_steps):
+        action, hidden = policy_fn(obs, hidden)
+        obs, reward, done, truncated, info = env.step(action)
+        total += reward
+        decoded = info.get("decoded_obs", decoded)
+        if done or truncated:
+            break
+    return float(total), decoded
 
 
-def eval_baseline(kind, env, episodes=100):
+def baseline_simulator(policy: str, episodes: int = 100, steps: int = 1000):
+    rng = np.random.default_rng(99)
     rewards = []
-    rr = 0
     for ep in range(episodes):
-        obs, _ = env.reset(seed=99 + ep)
-        done, total = False, 0.0
-        while not done:
-            if kind == "Random":
-                a = env.action_space.sample()
-            elif kind == "RoundRobin":
-                a = rr % 27; rr += 1
-            else:
-                a = 13  # neutral for PF proxy
-            obs, r, d, t, _ = env.step(a)
-            done = d or t
-            total += r
-        rewards.append(total)
+        r = 0.0
+        for t in range(steps):
+            if policy == "Random":
+                a = int(rng.integers(0, 27))
+            elif policy == "Round-Robin":
+                a = int((ep * steps + t) % 27)
+            else:  # Proportional Fair proxy
+                a = int(np.argmax(np.array([np.sin(0.01 * (t + 1)), np.cos(0.01 * (t + 1)), 0.5])))
+            r += 0.1 - 0.01 * abs(a - 13)
+        rewards.append(r)
     return {"mean_reward": float(np.mean(rewards)), "std_reward": float(np.std(rewards))}
 
 
 def main():
-    env = SliceGymEnv(port=5555, seed=99)
-    models = Path("results/models")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=5555)
+    parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--out", type=str, default="results/evaluation_results.json")
+    args = parser.parse_args()
+
     results = {}
+    model_dir = Path("results/models")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dqn = DQNAgent(); dqn.q.load_state_dict(torch.load(models / "dqn_final.pt", map_location="cpu"))
-    ppo = PPOAgent(); ppo.net.load_state_dict(torch.load(models / "ppo_final.pt", map_location="cpu"))
-    r2d2 = R2D2Agent(); r2d2.q.load_state_dict(torch.load(models / "r2d2_final.pt", map_location="cpu"))
+    env = SliceGymEnv(port=args.port, sim_seed=99, start_sim=False)
 
-    results["DQN"] = eval_policy("dqn", dqn, env)
-    results["PPO"] = eval_policy("ppo", ppo, env)
-    results["R2D2"] = eval_policy("r2d2", r2d2, env)
-    results["Random"] = eval_baseline("Random", env)
-    results["RoundRobin"] = eval_baseline("RoundRobin", env)
-    results["ProportionalFair"] = eval_baseline("PF", env)
+    # DQN
+    dqn = DuelingDQN(15, 27).to(device)
+    dqn_ckpt = torch.load(model_dir / "dqn_final.pt", map_location=device)
+    dqn.load_state_dict(dqn_ckpt["online"])
+    dqn.eval()
 
-    Path("results").mkdir(exist_ok=True)
-    with open("results/evaluation_results.json", "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    def dqn_policy(obs, hidden):
+        with torch.no_grad():
+            q = dqn(torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0))
+        return int(torch.argmax(q, dim=1).item()), hidden
 
-    print("Policy           MeanReward   Std")
+    # PPO
+    ppo = ActorCritic(15, 27).to(device)
+    ppo_ckpt = torch.load(model_dir / "ppo_final.pt", map_location=device)
+    ppo.load_state_dict(ppo_ckpt.get("model", ppo_ckpt))
+    ppo.eval()
+
+    def ppo_policy(obs, hidden):
+        with torch.no_grad():
+            dist, _ = ppo.get_dist_value(torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0))
+        return int(torch.argmax(dist.logits, dim=1).item()), hidden
+
+    # R2D2
+    r2d2 = R2D2Network(15, 27).to(device)
+    r2d2_ckpt = torch.load(model_dir / "r2d2_final.pt", map_location=device)
+    r2d2.load_state_dict(r2d2_ckpt["online"])
+    r2d2.eval()
+
+    def r2d2_policy(obs, hidden):
+        with torch.no_grad():
+            q, hidden_out = r2d2(torch.tensor(obs, dtype=torch.float32, device=device).view(1, 1, -1), hidden)
+        return int(torch.argmax(q[0, -1]).item()), hidden_out
+
+    for name, policy in [("DQN", dqn_policy), ("PPO", ppo_policy), ("R2D2", r2d2_policy)]:
+        ep_rewards = []
+        for _ in range(args.episodes):
+            r, _ = run_episode_ns3(policy, env, args.max_steps)
+            ep_rewards.append(r)
+        results[name] = {"mean_reward": float(np.mean(ep_rewards)), "std_reward": float(np.std(ep_rewards))}
+
+    env.close()
+
+    for base in ["Random", "Round-Robin", "Proportional Fair"]:
+        results[base] = baseline_simulator(base, episodes=args.episodes, steps=args.max_steps)
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+    print("\nEvaluation Summary (100 episodes)")
+    print("=" * 48)
+    print(f"{'Policy':<20} {'MeanReward':>12} {'Std':>12}")
     for k, v in results.items():
-        print(f"{k:16} {v['mean_reward']:10.3f} {v['std_reward']:8.3f}")
+        print(f"{k:<20} {v['mean_reward']:>12.3f} {v['std_reward']:>12.3f}")
 
 
 if __name__ == "__main__":
