@@ -407,6 +407,8 @@ NrSliceGymEnv::AggregateFlowStats()
     const auto stats = m_flowMonitor->GetFlowStats();
     std::array<uint32_t, kSliceCount> packetsPerSlice{0, 0, 0};
     std::array<uint32_t, kSliceCount> flowsPerSlice{0, 0, 0};
+    std::array<double, kSliceCount> totalDeltaDelayMs{0.0, 0.0, 0.0};
+    std::array<uint64_t, kSliceCount> totalDeltaPkts{0, 0, 0};
     
     for (const auto& [flowId, st] : stats)
     {
@@ -439,9 +441,8 @@ NrSliceGymEnv::AggregateFlowStats()
 
         if (deltaPkts > 0)
         {
-             const double meanDelayMs = (deltaDelay * 1e3) / deltaPkts;
-             m_latMs[slice] += meanDelayMs;
-            ++packetsPerSlice[slice];
+            totalDeltaDelayMs[slice] += deltaDelay * 1e3;
+            totalDeltaPkts[slice]    += deltaPkts;
         }
 
             const uint64_t prevTx  = m_prevTxPackets.count(flowId)
@@ -451,6 +452,8 @@ NrSliceGymEnv::AggregateFlowStats()
             const uint64_t deltaDrop = (deltaTx > deltaPkts)
                              ? (deltaTx - deltaPkts) : 0;
             m_prevTxPackets[flowId] = st.txPackets;
+        
+        
         if (deltaTx > 0)
             m_queueOcc[slice] +=
                 static_cast<double>(deltaDrop) / static_cast<double>(deltaTx);
@@ -459,8 +462,9 @@ NrSliceGymEnv::AggregateFlowStats()
 
         for (uint8_t s = 0; s < kSliceCount; ++s)
     {
-        if (packetsPerSlice[s] > 0)
-            m_latMs[s] /= packetsPerSlice[s];
+        if (totalDeltaPkts[s] > 0)
+             m_latMs[s] = totalDeltaDelayMs[s] / static_cast<double>(totalDeltaPkts[s]);
+            
         if (flowsPerSlice[s] > 0)           
             m_queueOcc[s] /= flowsPerSlice[s]; 
         m_queueOcc[s] = std::min(1.0, std::max(0.0, m_queueOcc[s]));
@@ -552,6 +556,8 @@ const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
 const double effJain = (esum2 > 0.0)
     ? ((esum * esum) / (n * esum2))
     : 1.0;   // default fair when no active slices
+
+    
 
     m_reward = static_cast<float>(
      0.35 * thrNormAvg    +
