@@ -83,7 +83,7 @@ main(int argc, char* argv[])
     cmd.Parse(argc, argv);
 
     RngSeedManager::SetSeed(1);
-    RngSeedManager::SetRun(seed + static_cast<uint32_t>(std::time(nullptr)) % 10000);
+    RngSeedManager::SetRun(seed);
 
     constexpr uint32_t gnbCount = 1;
     constexpr uint32_t embbUes = 10;
