@@ -1,324 +1,580 @@
 #include "slice-env.h"
 
-#include "ns3/double.h"
+#ifdef HAVE_OPENGYM
+
 #include "ns3/integer.h"
-#include "ns3/log.h"
-#include "ns3/nr-ue-net-device.h"
 #include "ns3/nr-ue-mac.h"
-#include "ns3/random-variable-stream.h"
+#include "ns3/nr-ue-net-device.h"
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
+#include <numeric>
 
-namespace ns3 {
+namespace ns3
+{
 
 NS_LOG_COMPONENT_DEFINE("NrSliceGymEnv");
 NS_OBJECT_ENSURE_REGISTERED(NrSliceGymEnv);
 
-TypeId
-NrSliceGymEnv::GetTypeId()
+namespace
 {
-  static TypeId tid = TypeId("ns3::NrSliceGymEnv").SetParent<OpenGymEnv>().AddConstructor<NrSliceGymEnv>();
-  return tid;
+constexpr std::array<std::array<int8_t, NrSliceGymEnv::kSliceCount>, NrSliceGymEnv::kActionCount>
+    kActionDelta = {{{-1, -1, -1},
+                     {-1, -1, 0},
+                     {-1, -1, 1},
+                     {-1, 0, -1},
+                     {-1, 0, 0},
+                     {-1, 0, 1},
+                     {-1, 1, -1},
+                     {-1, 1, 0},
+                     {-1, 1, 1},
+                     {0, -1, -1},
+                     {0, -1, 0},
+                     {0, -1, 1},
+                     {0, 0, -1},
+                     {0, 0, 0},
+                     {0, 0, 1},
+                     {0, 1, -1},
+                     {0, 1, 0},
+                     {0, 1, 1},
+                     {1, -1, -1},
+                     {1, -1, 0},
+                     {1, -1, 1},
+                     {1, 0, -1},
+                     {1, 0, 0},
+                     {1, 0, 1},
+                     {1, 1, -1},
+                     {1, 1, 0},
+                     {1, 1, 1}}};
+
+float
+Clamp01(double v)
+{
+    return static_cast<float>(std::max(0.0, std::min(1.0, v)));
 }
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Constructor / Destructor
+// ---------------------------------------------------------------------------
 
 NrSliceGymEnv::NrSliceGymEnv()
-  : m_prbAlloc{10, 8, 7}
 {
+    m_observation.fill(0.0F);
 }
 
 NrSliceGymEnv::~NrSliceGymEnv() = default;
 
-void
-NrSliceGymEnv::Initialize(const SimConfig &cfg,
-                          Ptr<NrHelper> nrHelper,
-                          const NetDeviceContainer &gnbDevs,
-                          const std::array<NetDeviceContainer, 3> &ueDevsBySlice)
+TypeId
+NrSliceGymEnv::GetTypeId()
 {
-  m_cfg = cfg;
-  m_nrHelper = nrHelper;
-  m_gnbDevs = gnbDevs;
-  m_ueDevsBySlice = ueDevsBySlice;
-  m_prbAlloc = cfg.initPrb;
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    m_metrics[s].ueCount = m_ueDevsBySlice[s].GetN();
-  }
-  Simulator::Schedule(Seconds(m_cfg.stepS), &NrSliceGymEnv::ScheduleStep, this);
+    static TypeId tid = TypeId("ns3::NrSliceGymEnv")
+                            .SetParent<OpenGymEnv>()
+                            .AddConstructor<NrSliceGymEnv>();
+    return tid;
 }
+
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
+
+void
+NrSliceGymEnv::Initialize(const Config& cfg,
+                          const Ptr<NrHelper>& nrHelper,
+                          const NetDeviceContainer& gnbDevs,
+                          const std::array<NetDeviceContainer, kSliceCount>& ueDevsBySlice)
+{
+    m_cfg          = cfg;
+    m_nrHelper     = nrHelper;
+    m_gnbDevs      = gnbDevs;
+    m_ueDevsBySlice = ueDevsBySlice;
+    m_prbAlloc     = cfg.initialPrbAlloc;
+
+    m_uesPerSlice = {
+        ueDevsBySlice[EMBB].GetN(),
+        ueDevsBySlice[URLLC].GetN(),
+        ueDevsBySlice[MMTC].GetN()
+    };
+
+    BuildImsiSliceMap();
+
+    m_initialized = true;
+    m_stepCount   = 0;
+    Simulator::Schedule(m_cfg.stepInterval, &NrSliceGymEnv::ScheduleStep, this);
+}
+
+void
+NrSliceGymEnv::SetFlowMonitor(const Ptr<FlowMonitor>& flowMonitor,
+                              const Ptr<Ipv4FlowClassifier>& flowClassifier)
+{
+    m_flowMonitor     = flowMonitor;
+    m_flowClassifier  = flowClassifier;
+}
+
+// ---------------------------------------------------------------------------
+// RNTI / IMSI map construction
+// ---------------------------------------------------------------------------
 
 void
 NrSliceGymEnv::BuildImsiSliceMap()
 {
-  m_imsiToSlice.clear();
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    for (uint32_t i = 0; i < m_ueDevsBySlice[s].GetN(); ++i)
+    m_imsiToSlice.clear();
+
+    for (uint8_t s = 0; s < kSliceCount; ++s)
     {
-      Ptr<NrUeNetDevice> ue = DynamicCast<NrUeNetDevice>(m_ueDevsBySlice[s].Get(i));
-      if (ue)
-      {
-        m_imsiToSlice[ue->GetImsi()] = static_cast<SliceId>(s);
-      }
+        for (uint32_t i = 0; i < m_ueDevsBySlice[s].GetN(); ++i)
+        {
+            Ptr<NrUeNetDevice> ueDev =
+                DynamicCast<NrUeNetDevice>(m_ueDevsBySlice[s].Get(i));
+            if (!ueDev)
+            {
+                continue;
+            }
+            m_imsiToSlice[ueDev->GetImsi()] = s;
+        }
     }
-  }
 }
 
 void
-NrSliceGymEnv::AttachFlowMonitor(Ptr<FlowMonitor> fm)
+NrSliceGymEnv::TryBuildRntiSliceMap()
 {
-  m_flowMonitor = fm;
-}
-
-void
-NrSliceGymEnv::OnSchedulerNotify(const std::vector<NrMacSchedulerUeInfoAi::LcObservation> &,
-                                 bool gameOver,
-                                 float,
-                                 const std::string &extra,
-                                 const NrMacSchedulerUeInfoAi::UpdateAllUeWeightsFn &updateFn)
-{
-  m_gameOver = gameOver;
-  m_extraInfo = extra;
-  m_updateWeightsFn = updateFn;
-  BuildRntiToSliceMapLazily();
-  ApplySliceWeights();
-}
-
-void
-NrSliceGymEnv::BuildRntiToSliceMapLazily()
-{
-  if (!m_rntiToSlice.empty())
-  {
-    return;
-  }
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    for (uint32_t i = 0; i < m_ueDevsBySlice[s].GetN(); ++i)
+    if (m_rntiMapReady)
     {
-      Ptr<NrUeNetDevice> ueDev = DynamicCast<NrUeNetDevice>(m_ueDevsBySlice[s].Get(i));
-      if (!ueDev || !ueDev->GetMac(0))
-      {
-        continue;
-      }
-      uint16_t rnti = ueDev->GetMac(0)->GetRnti();
-      if (rnti == std::numeric_limits<uint16_t>::max())
-      {
-        continue;
-      }
-      m_rntiToSlice[rnti] = static_cast<SliceId>(s);
+        return;
     }
-  }
+
+    m_rntiToSlice.clear();
+    bool allResolved = true;
+
+    for (uint8_t s = 0; s < kSliceCount; ++s)
+    {
+        for (uint32_t i = 0; i < m_ueDevsBySlice[s].GetN(); ++i)
+        {
+            Ptr<NrUeNetDevice> ueDev =
+                DynamicCast<NrUeNetDevice>(m_ueDevsBySlice[s].Get(i));
+            if (!ueDev || !ueDev->GetMac(0))
+            {
+                allResolved = false;
+                continue;
+            }
+
+            const uint16_t rnti = ueDev->GetMac(0)->GetRnti();
+            if (rnti == std::numeric_limits<uint16_t>::max())
+            {
+                allResolved = false;
+                continue;
+            }
+
+            m_rntiToSlice[rnti] = s;
+        }
+    }
+
+    m_rntiMapReady = allResolved && !m_rntiToSlice.empty();
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler callback
+// ---------------------------------------------------------------------------
+
+void
+NrSliceGymEnv::OnSchedulerNotify(
+    const std::vector<NrMacSchedulerUeInfoAi::LcObservation>& observations,
+    bool isGameOver,
+    float reward,
+    const std::string& extraInfo,
+    const NrMacSchedulerUeInfoAi::UpdateAllUeWeightsFn& updateWeightsFn)
+{
+    m_lastLcObservations = observations;
+    m_gameOver           = isGameOver;
+    m_reward             = reward;
+    m_extraInfo          = extraInfo;
+    m_updateWeightsFn    = updateWeightsFn;
+
+    TryBuildRntiSliceMap();
+    ApplySliceWeights();
+}
+
+// ---------------------------------------------------------------------------
+// OpenGymEnv API
+// ---------------------------------------------------------------------------
+
+Ptr<OpenGymSpace>
+NrSliceGymEnv::GetActionSpace()
+{
+    return CreateObject<OpenGymDiscreteSpace>(kActionCount);
 }
 
 Ptr<OpenGymSpace>
 NrSliceGymEnv::GetObservationSpace()
 {
-  std::vector<uint32_t> shape = {15};
-  return CreateObject<OpenGymBoxSpace>(0.0, 1.0, shape, TypeNameGet<float>());
-}
-
-Ptr<OpenGymSpace>
-NrSliceGymEnv::GetActionSpace()
-{
-  return CreateObject<OpenGymDiscreteSpace>(27);
-}
-
-Ptr<OpenGymDataContainer>
-NrSliceGymEnv::GetObservation()
-{
-  auto box = CreateObject<OpenGymBoxContainer<float>>(std::vector<uint32_t>{15});
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    box->AddValue(static_cast<float>(m_prbAlloc[s]) / static_cast<float>(m_cfg.totalPrbs));
-  }
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    box->AddValue(std::min(1.0f, static_cast<float>(m_metrics[s].thrMbps / m_cfg.maxThrMbps[s])));
-  }
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    box->AddValue(std::min(1.0f, static_cast<float>(m_metrics[s].latMs / m_cfg.maxLatMs[s])));
-  }
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    box->AddValue(static_cast<float>(std::clamp(m_metrics[s].queueOcc, 0.0, 1.0)));
-  }
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    box->AddValue(std::min(1.0f, static_cast<float>(m_metrics[s].ueCount) / static_cast<float>(m_cfg.maxUes)));
-  }
-  return box;
-}
-
-float
-NrSliceGymEnv::GetReward()
-{
-  return m_lastReward;
+    const float low  = 0.0F;
+    const float high = 1.0F;
+    std::vector<uint32_t> shape = {kObsSize};
+    return CreateObject<OpenGymBoxSpace>(low, high, shape, TypeNameGet<float>());
 }
 
 bool
 NrSliceGymEnv::GetGameOver()
 {
-  return m_gameOver || (m_stepCounter >= m_cfg.maxSteps);
+    return m_gameOver;
+}
+
+Ptr<OpenGymDataContainer>
+NrSliceGymEnv::GetObservation()
+{
+    std::vector<uint32_t> shape = {kObsSize};
+    Ptr<OpenGymBoxContainer<float>> box =
+        CreateObject<OpenGymBoxContainer<float>>(shape);
+
+    for (uint32_t i = 0; i < kObsSize; ++i)
+    {
+        box->AddValue(m_observation[i]);
+    }
+
+    return box;
+}
+
+float
+NrSliceGymEnv::GetReward()
+{
+    return m_reward;
 }
 
 std::string
 NrSliceGymEnv::GetExtraInfo()
 {
-  return m_extraInfo;
-}
-
-std::array<int32_t, 3>
-NrSliceGymEnv::DecodeAction(uint32_t actionId) const
-{
-  std::array<int32_t, 3> d{};
-  for (int i = 0; i < 3; ++i)
-  {
-    d[i] = static_cast<int32_t>(actionId % 3) - 1;
-    actionId /= 3;
-  }
-  return d;
+    return m_extraInfo;
 }
 
 bool
 NrSliceGymEnv::ExecuteActions(Ptr<OpenGymDataContainer> action)
 {
-  Ptr<OpenGymDiscreteContainer> discrete = DynamicCast<OpenGymDiscreteContainer>(action);
-  if (!discrete)
-  {
-    return false;
-  }
-  uint32_t actionId = discrete->GetValue();
-  auto delta = DecodeAction(actionId);
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    int64_t v = static_cast<int64_t>(m_prbAlloc[s]) + delta[s];
-    m_prbAlloc[s] = static_cast<uint32_t>(std::max<int64_t>(1, v));
-  }
-  EnforceConstraints();
-  ApplySliceWeights();
-  return true;
+    Ptr<OpenGymDiscreteContainer> discrete =
+        DynamicCast<OpenGymDiscreteContainer>(action);
+    if (!discrete)
+    {
+        NS_LOG_WARN("NrSliceGymEnv received non-discrete action container");
+        return false;
+    }
+
+    const uint32_t actionId = static_cast<uint32_t>(discrete->GetValue());
+    if (actionId >= kActionCount)
+    {
+        NS_LOG_WARN("Action id out of range: " << actionId);
+        return false;
+    }
+
+    for (uint32_t s = 0; s < kSliceCount; ++s)
+    {
+        const int32_t updated =
+            static_cast<int32_t>(m_prbAlloc[s]) + kActionDelta[actionId][s];
+        m_prbAlloc[s] = static_cast<uint16_t>(std::max(1, updated));
+    }
+
+    EnforceConstraints();
+    ApplySliceWeights();
+    return true;
 }
+
+// ---------------------------------------------------------------------------
+// BUG-03 FIX — EnforceConstraints
+// ---------------------------------------------------------------------------
 
 void
 NrSliceGymEnv::EnforceConstraints()
 {
-  int32_t sum = static_cast<int32_t>(m_prbAlloc[0] + m_prbAlloc[1] + m_prbAlloc[2]);
-  while (sum > static_cast<int32_t>(m_cfg.totalPrbs))
-  {
-    uint8_t idx = std::distance(m_prbAlloc.begin(), std::max_element(m_prbAlloc.begin(), m_prbAlloc.end()));
-    if (m_prbAlloc[idx] > 1)
+    for (auto& prb : m_prbAlloc)
     {
-      --m_prbAlloc[idx];
-      --sum;
+        prb = std::max<uint16_t>(1, prb);
     }
-    else
+
+    int32_t diff = static_cast<int32_t>(m_cfg.totalPrbs) -
+                   static_cast<int32_t>(m_prbAlloc[0] + m_prbAlloc[1] + m_prbAlloc[2]);
+
+    while (diff > 0)
     {
-      break;
+        const uint8_t minSlice = static_cast<uint8_t>(
+            std::distance(m_prbAlloc.begin(),
+                          std::min_element(m_prbAlloc.begin(), m_prbAlloc.end())));
+        ++m_prbAlloc[minSlice];
+        --diff;
     }
-  }
-  while (sum < static_cast<int32_t>(m_cfg.totalPrbs))
-  {
-    uint8_t idx = std::distance(m_prbAlloc.begin(), std::min_element(m_prbAlloc.begin(), m_prbAlloc.end()));
-    ++m_prbAlloc[idx];
-    ++sum;
-  }
+
+    int safetyCounter = 0;
+    while (diff < 0)
+    {
+        const uint8_t maxSlice = static_cast<uint8_t>(
+            std::distance(m_prbAlloc.begin(),
+                          std::max_element(m_prbAlloc.begin(), m_prbAlloc.end())));
+
+        if (m_prbAlloc[maxSlice] <= 1 || ++safetyCounter > 100)
+        {
+            NS_LOG_WARN("NrSliceGymEnv::EnforceConstraints: "
+                        "cannot converge, resetting to initialPrbAlloc");
+            m_prbAlloc = m_cfg.initialPrbAlloc;
+            break;
+        }
+
+        --m_prbAlloc[maxSlice];
+        ++diff;
+    }
 }
+
+// ---------------------------------------------------------------------------
+// BUG-02 FIX — ApplySliceWeights
+// ---------------------------------------------------------------------------
 
 void
 NrSliceGymEnv::ApplySliceWeights()
 {
-  if (!m_updateWeightsFn)
-  {
-    return;
-  }
-  NrMacSchedulerUeInfoAi::UeWeightsMap weights;
-  for (auto const &[rnti16, slice] : m_rntiToSlice)
-  {
-    uint8_t rnti = static_cast<uint8_t>(rnti16);
-    double base = static_cast<double>(m_prbAlloc[slice]) / static_cast<double>(m_cfg.totalPrbs);
-    double perUe = base / std::max<uint32_t>(1, m_ueDevsBySlice[slice].GetN());
-    weights[rnti][1] = perUe;
-  }
-  m_updateWeightsFn(weights);
+    if (!m_updateWeightsFn)
+    {
+        return;
+    }
+
+    if (m_lastLcObservations.empty())
+    {
+        return;
+    }
+
+    TryBuildRntiSliceMap();
+
+    NrMacSchedulerUeInfoAi::UeWeightsMap weightsMap;
+
+    for (const auto& obs : m_lastLcObservations)
+    {
+        const uint16_t rnti16 = obs.rnti;
+        const uint8_t  lcId   = obs.lcId;
+
+        auto it = m_rntiToSlice.find(rnti16);
+        if (it == m_rntiToSlice.end())
+        {
+            continue;
+        }
+
+        const uint8_t slice = it->second;
+        if (slice >= kSliceCount)
+        {
+            continue;
+        }
+
+        const double sliceFrac =
+            static_cast<double>(m_prbAlloc[slice]) / m_cfg.totalPrbs;
+        const double ueCount =
+            static_cast<double>(std::max<uint32_t>(1, m_uesPerSlice[slice]));
+        const double weight = sliceFrac / ueCount;
+
+        const uint8_t rnti8 = static_cast<uint8_t>(rnti16);
+        weightsMap[rnti8][lcId] = weight;
+    }
+
+    if (!weightsMap.empty())
+    {
+        m_updateWeightsFn(weightsMap);
+    }
 }
 
-void
-NrSliceGymEnv::ScheduleStep()
+// ---------------------------------------------------------------------------
+// Flow statistics aggregation
+// ---------------------------------------------------------------------------
+
+uint8_t
+NrSliceGymEnv::ResolveSliceFromPort(uint16_t port) const
 {
-  AggregateFlowStats();
-  UpdateRewardAndDone();
-  Notify();
-  ++m_stepCounter;
-  if (!GetGameOver())
-  {
-    Simulator::Schedule(Seconds(m_cfg.stepS), &NrSliceGymEnv::ScheduleStep, this);
-  }
+    if (port >= 1000 && port <= 1999)
+    {
+        return EMBB;
+    }
+    if (port >= 2000 && port <= 2999)
+    {
+        return URLLC;
+    }
+    return MMTC;
 }
 
 void
 NrSliceGymEnv::AggregateFlowStats()
 {
-  for (auto &m : m_metrics)
-  {
-    m.thrMbps = 0.0;
-    m.latMs = 0.0;
-    m.loss = 0.0;
-    m.queueOcc = 0.0;
-    m.packets = 0;
-  }
+    m_thrMbps.fill(0.0);
+    m_latMs.fill(0.0);
+    m_queueOcc.fill(0.0);
 
-  // Lightweight synthetic fallback metrics for stable training scaffolding.
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    double prbFrac = static_cast<double>(m_prbAlloc[s]) / static_cast<double>(m_cfg.totalPrbs);
-    m_metrics[s].thrMbps = prbFrac * m_cfg.maxThrMbps[s] * 0.85;
-    m_metrics[s].latMs = m_cfg.maxLatMs[s] * (1.0 - 0.7 * prbFrac);
-    m_metrics[s].queueOcc = std::clamp(1.0 - prbFrac, 0.0, 1.0);
-    m_metrics[s].loss = std::clamp(0.05 * (1.0 - prbFrac), 0.0, 1.0);
-  }
+    if (!m_flowMonitor || !m_flowClassifier)
+    {
+        return;
+    }
+
+    const auto stats = m_flowMonitor->GetFlowStats();
+    std::array<uint32_t, kSliceCount> packetsPerSlice{0, 0, 0};
+
+    for (const auto& [flowId, st] : stats)
+    {
+        Ipv4FlowClassifier::FiveTuple fiveTuple =
+            m_flowClassifier->FindFlow(flowId);
+        const uint8_t slice =
+            ResolveSliceFromPort(fiveTuple.destinationPort);
+
+        const uint64_t prev       = m_prevRxBytes.count(flowId) ? m_prevRxBytes[flowId] : 0;
+        const uint64_t deltaBytes = (st.rxBytes >= prev) ? (st.rxBytes - prev) : st.rxBytes;
+        m_prevRxBytes[flowId]     = st.rxBytes;
+        const double thrMbps =
+            (m_cfg.stepInterval.GetSeconds() > 0.0)
+                ? (static_cast<double>(deltaBytes) * 8.0 / 1e6) /
+                      std::max(1e-9, m_cfg.stepInterval.GetSeconds())
+                : 0.0;
+        m_thrMbps[slice] += thrMbps;
+
+        const uint64_t prevPkts  = m_prevRxPackets.count(flowId) 
+                           ? m_prevRxPackets[flowId] : 0;
+        const double   prevDelay = m_prevDelaySum.count(flowId)  
+                           ? m_prevDelaySum[flowId]  : 0.0;
+        const uint64_t deltaPkts  = (st.rxPackets >= prevPkts)
+                            ? (st.rxPackets - prevPkts) : 0;
+        const double   deltaDelay = (st.delaySum.GetSeconds() >= prevDelay)
+                            ? (st.delaySum.GetSeconds() - prevDelay) : 0.0;
+
+        m_prevRxPackets[flowId] = st.rxPackets;
+        m_prevDelaySum[flowId]  = st.delaySum.GetSeconds();
+
+        if (deltaPkts > 0)
+        {
+             const double meanDelayMs = (deltaDelay * 1e3) / deltaPkts;
+             m_latMs[slice] += meanDelayMs;
+            ++packetsPerSlice[slice];
+        }
+
+        const uint64_t tx = st.txPackets;
+        const uint64_t rx = st.rxPackets;
+        if (tx > 0)
+        {
+            m_queueOcc[slice] +=
+                static_cast<double>(tx - rx) / static_cast<double>(tx);
+        }
+    }
+
+    for (uint8_t s = 0; s < kSliceCount; ++s)
+    {
+        if (packetsPerSlice[s] > 0)
+        {
+            m_latMs[s] /= packetsPerSlice[s];
+        }
+        m_queueOcc[s] = std::min(1.0, std::max(0.0, m_queueOcc[s]));
+    }
 }
 
-double
-NrSliceGymEnv::JainIndex(const std::array<double, 3> &x) const
-{
-  double sum = x[0] + x[1] + x[2];
-  double sumSq = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
-  if (sumSq <= 1e-9)
-  {
-    return 0.0;
-  }
-  return (sum * sum) / (3.0 * sumSq);
-}
+// ---------------------------------------------------------------------------
+// Scheduled step — observation + reward + notify
+// ---------------------------------------------------------------------------
 
 void
-NrSliceGymEnv::UpdateRewardAndDone()
+NrSliceGymEnv::ScheduleStep()
 {
-  const std::array<double, 3> minThr{10.0, 1.0, 0.1};
-  const std::array<double, 3> maxLat{50.0, 1.0, 500.0};
-
-  double thrTerm = 0.0;
-  double satTerm = 0.0;
-  int slaViol = 0;
-  std::array<double, 3> thr{};
-
-  for (uint8_t s = 0; s < 3; ++s)
-  {
-    thr[s] = m_metrics[s].thrMbps;
-    thrTerm += std::min(1.0, m_metrics[s].thrMbps / m_cfg.maxThrMbps[s]);
-    double sat = m_metrics[s].thrMbps >= minThr[s] ? 1.0 : 0.0;
-    double latNorm = std::min(1.0, m_metrics[s].latMs / maxLat[s]);
-    satTerm += sat * (1.0 - latNorm);
-    bool viol = (m_metrics[s].thrMbps < minThr[s]) || (m_metrics[s].latMs > maxLat[s]);
-    if (viol)
+    if (!m_initialized)
     {
-      ++slaViol;
+        return;
     }
-  }
 
-  double reward = 0.5 * (thrTerm / 3.0) + 0.3 * (satTerm / 3.0) + 0.2 * JainIndex(thr) - 2.0 * slaViol;
-  m_lastReward = static_cast<float>(reward);
+    ++m_stepCount;
+    AggregateFlowStats();
+
+    // Build normalised observation vector
+    for (uint8_t s = 0; s < kSliceCount; ++s)
+    {
+        m_observation[s]      = Clamp01(static_cast<double>(m_prbAlloc[s]) /
+                                        m_cfg.totalPrbs);
+        m_observation[3 + s]  = Clamp01(m_thrMbps[s] / m_cfg.maxThrMbps[s]);
+        m_observation[6 + s]  = Clamp01(m_latMs[s] / (2.0 * m_cfg.maxLatMs[s]));
+        m_observation[9 + s]  = Clamp01(m_queueOcc[s]);
+        m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) /
+                                         m_cfg.maxUes[s]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Reward Function v2: throughput utility + continuous SLA margin +
+    //            PRB-efficiency Jain - heavy penalty per SLA violation
+    //
+    // Key improvements over v1:
+    //   - Jain computed on (thrNorm/prbFrac) not raw Mbps: penalises
+    //     degenerate allocations like (1,1,23) even when SLA is met.
+    //   - Continuous SLA margin replaces binary satNorm: agent receives
+    //     gradient above AND below the SLA threshold, not just a cliff.
+    //   - All three positive terms normalised to [0,1]; max reward = 1.0/step.
+    // -----------------------------------------------------------------------
+    double thrNormAvg   = 0.0;
+    double slaMarginAvg = 0.0;
+    uint32_t slaViolations = 0;
+    std::array<double, kSliceCount> efficiency{};
+
+    for (uint8_t s = 0; s < kSliceCount; ++s)
+    {
+        const double thrNorm =
+            std::min(1.0, m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]));
+        const double prbFrac =
+            static_cast<double>(m_prbAlloc[s]) /
+            static_cast<double>(m_cfg.totalPrbs);
+
+        // SLA check (unchanged semantics)
+        const bool slaSat =
+            (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
+            (m_latMs[s]   <= m_cfg.maxLatMs[s]);
+
+        // Continuous SLA margin: +1 = comfortably above, 0 = exactly at
+        // threshold, -1 = far below. Clamped to [-1, +1].
+        const double thrMargin = std::max(-1.0, std::min(1.0,
+            (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
+            std::max(1e-9, m_cfg.minThrMbps[s])));
+        const double latMargin = std::max(-1.0, std::min(1.0,
+            (m_cfg.maxLatMs[s] - m_latMs[s]) /
+            std::max(1e-9, m_cfg.maxLatMs[s])));
+
+        thrNormAvg   += thrNorm;
+        slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;  // in [-1,+1]
+        // Inactive mMTC (IoT duty-cycle off-period) is physics, not a policy
+        // failure. Exclude from violation penalty; keep in Jain fairness above.
+        const bool mmtcInactive = (s == MMTC && m_thrMbps[s] < 0.001);
+        slaViolations += (slaSat || mmtcInactive) ? 0 : 1;
+
+        // PRB efficiency: normalised throughput delivered per unit PRB
+        // fraction. High for slices that use their PRBs well; low for
+        // slices that hoard PRBs without delivering throughput.
+        efficiency[s] = thrNorm / std::max(1e-9, prbFrac);
+    }
+
+    thrNormAvg   /= kSliceCount;
+    slaMarginAvg /= kSliceCount;   // in [-1, +1]
+
+    // Map slaMarginAvg from [-1,+1] to [0,1] so all positive terms share
+    // the same scale and the formula is easy to reason about.
+    const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
+
+    // Jain's fairness index on PRB efficiency (not raw throughput).
+    // Balanced allocations score near 1.0; degenerate ones score << 1.0.
+    const double esum =
+        std::accumulate(efficiency.begin(), efficiency.end(), 0.0);
+    double esum2 = 0.0;
+    for (double e : efficiency)
+    {
+        esum2 += e * e;
+    }
+    const double effJain =
+        (esum2 > 0.0) ? ((esum * esum) / (kSliceCount * esum2)) : 0.0;
+
+    m_reward = static_cast<float>(
+        0.35 * thrNormAvg    +
+        0.30 * slaMarginNorm +
+        0.35 * effJain       -
+        2.0  * static_cast<double>(slaViolations));
+
+    m_gameOver = Simulator::Now() >= m_cfg.simTime;
+    Notify();
+
+    if (!m_gameOver)
+    {
+        Simulator::Schedule(m_cfg.stepInterval,
+                            &NrSliceGymEnv::ScheduleStep, this);
+    }
 }
 
 } // namespace ns3
+
+#endif // HAVE_OPENGYM
