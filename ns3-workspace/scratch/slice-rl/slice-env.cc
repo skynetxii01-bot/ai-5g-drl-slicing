@@ -553,11 +553,6 @@ const double effJain = (esum2 > 0.0)
     ? ((esum * esum) / (n * esum2))
     : 1.0;   // default fair when no active slices
 
-    NS_LOG_UNCOND("[TEST-C] thrNormAvg=" << thrNormAvg
-    << " slaMarginNorm=" << slaMarginNorm
-    << " effJain=" << effJain
-    << " violations=" << slaViolations);
-
     m_reward = static_cast<float>(
      0.35 * thrNormAvg    +
      0.30 * slaMarginNorm +
