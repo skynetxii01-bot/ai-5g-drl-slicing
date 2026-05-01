@@ -232,7 +232,7 @@ main(int argc, char* argv[])
     Ipv4Address remoteHostAddr = internetIpIfaces.GetAddress(1);
     (void)remoteHostAddr;
 
-    // eMBB: video-like bursts.  Peak=20Mbps, on~2s, off~1s → avg≈13.3 Mbps/UE
+    // eMBB: video-like bursts.  Peak=10Mbps, on~2s, off~1s → avg≈6.63 Mbps/UE
     //       Duty cycle 67 % — frequently above SLA threshold, creating real PRB pressure.
     InstallOnOffTraffic(remoteHost, embbNodes, embbIfaces,
                         1000, 1448, DataRate("10Mbps"),
