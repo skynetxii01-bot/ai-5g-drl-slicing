@@ -227,7 +227,7 @@ def main() -> None:
                                "latency":    {s: 0.0 for s in SLICE_NAMES}}
 
                 embb_thr  = float(decoded["throughput"].get("eMBB",  0.0)) * float(cfg["env"]["max_thr_mbps"]["eMBB"])
-                urllc_lat = float(decoded["latency"].get("URLLC",    0.0)) * float(cfg["env"]["max_lat_ms"]["URLLC"])
+                urllc_lat = float(decoded["latency"].get("URLLC", 0.0)) * 2.0 * float(cfg["env"]["max_lat_ms"]["URLLC"])
                 sla_rate  = compute_sla_rate(decoded, cfg)
 
                 mean_loss = float(np.mean(ep_losses)) if ep_losses else 0.0
