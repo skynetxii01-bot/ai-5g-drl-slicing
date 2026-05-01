@@ -7,7 +7,61 @@ env:
 
 agents:
   dqn:
-    lr: 0.001
+    lr: 0.001env:
+  max_thr_mbps:
+    eMBB: 100.0
+    URLLC: 15.0
+    mMTC: 2.0
+  min_thr_mbps:
+    eMBB: 10.0
+    URLLC: 1.0
+    mMTC: 0.1
+  max_lat_ms:
+    eMBB: 50.0
+    URLLC: 15.0 # was 1.0
+    mMTC: 500.0
+
+train:
+  episodes: 500
+  max_steps: 1000
+  save_every: 10
+
+dqn:
+  lr: 0.0001 #was 0.001 then second change to 0.0003 
+  gamma: 0.99
+  batch_size: 64
+  buffer_size: 50000
+  tau: 0.001 # was 0.005
+  eps_start: 1.0
+  eps_end: 0.01
+  eps_decay_steps: 50000  # was 20000
+  grad_clip: 1.0 # Was 10.0
+
+ppo:
+  lr: 0.0003
+  gamma: 0.99
+  lambda_gae: 0.95
+  eps_clip: 0.2
+  n_steps: 2048
+  epochs: 4
+  batch_size: 64
+  ent_coef: 0.01
+  vf_coef: 0.5
+
+r2d2:
+  lr: 0.0001
+  gamma: 0.99
+  batch_size: 32
+  seq_len: 40
+  burn_in: 40
+  n_step: 5
+  per_alpha: 0.6
+  per_beta_start: 0.4
+  per_beta_end: 1.0
+  buffer_size: 100000
+  grad_clip: 40.0
+  target_update_every: 100      # BUG-05 fix — hard update every 100 train steps
+
     gamma: 0.99
     batch_size: 64
     buffer_size: 50000
