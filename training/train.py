@@ -58,7 +58,8 @@ def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
     for s in SLICE_NAMES:
         thr = float(decoded_obs["throughput"][s]) * float(max_thr[s])
         lat_norm = float(decoded_obs["latency"][s])
-        if thr >= float(min_thr[s]) and lat_norm < 0.5:
+        mmtc_inactive = (s == "mMTC" and thr < 0.001)
+        if mmtc_inactive or (thr >= float(min_thr[s]) and lat_norm < 0.5):
             sat += 1
     return sat / len(SLICE_NAMES)
 
