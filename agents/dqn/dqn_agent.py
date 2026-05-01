@@ -1,53 +1,121 @@
+"""Double DQN agent with dueling network."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict
+
+import pickle
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import optim
+from torch.nn.utils import clip_grad_norm_
 
 from agents.dqn.dqn_network import DuelingDQN
 from agents.dqn.replay_buffer import ReplayBuffer
 
 
-class DQNAgent:
-    def __init__(self, state_dim=15, action_dim=27, device="cpu"):
-        self.device = torch.device(device)
-        self.q = DuelingDQN(state_dim, action_dim).to(self.device)
-        self.tgt = DuelingDQN(state_dim, action_dim).to(self.device)
-        self.tgt.load_state_dict(self.q.state_dict())
-        self.opt = optim.Adam(self.q.parameters(), lr=1e-3)
-        self.buf = ReplayBuffer(50000)
-        self.gamma, self.batch, self.tau = 0.99, 64, 0.005
-        self.eps_start, self.eps_end, self.eps_decay_steps = 1.0, 0.01, 20000
-        self.step = 0
-        self.action_dim = action_dim
+@dataclass
+class DqnConfig:
+    obs_dim: int = 15
+    action_dim: int = 27
+    lr: float = 1e-3
+    gamma: float = 0.99
+    batch_size: int = 64
+    buffer_size: int = 50_000
+    tau: float = 0.005
+    eps_start: float = 1.0
+    eps_end: float = 0.01
+    eps_decay_steps: int = 20_000
+    grad_clip: float = 10.0
 
-    def act(self, obs, eval_mode=False):
-        eps = self.eps_end + (self.eps_start - self.eps_end) * max(0, 1 - self.step / self.eps_decay_steps)
-        if (not eval_mode) and np.random.rand() < eps:
-            return np.random.randint(self.action_dim)
+
+class DqnAgent:
+    def __init__(self, cfg: DqnConfig, device: torch.device) -> None:
+        self.cfg = cfg
+        self.device = device
+
+        self.online_net = DuelingDQN(cfg.obs_dim, cfg.action_dim).to(device)
+        self.target_net = DuelingDQN(cfg.obs_dim, cfg.action_dim).to(device)
+        self.target_net.load_state_dict(self.online_net.state_dict())
+        self.target_net.eval()
+
+        self.optim = torch.optim.Adam(self.online_net.parameters(), lr=cfg.lr)
+        self.buffer = ReplayBuffer(cfg.buffer_size)
+
+        self.total_steps = 0
+
+    def epsilon(self) -> float:
+        frac = min(1.0, self.total_steps / max(1, self.cfg.eps_decay_steps))
+        return self.cfg.eps_start + frac * (self.cfg.eps_end - self.cfg.eps_start)
+
+    @torch.no_grad()
+    def act(self, obs: np.ndarray, explore: bool = True) -> int:
+        eps = self.epsilon() if explore else 0.0
+        if np.random.rand() < eps:
+            return int(np.random.randint(self.cfg.action_dim))
+
+        obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        qvals = self.online_net(obs_t)
+        return int(torch.argmax(qvals, dim=1).item())
+
+    def store(self, obs: np.ndarray, action: int, reward: float, next_obs: np.ndarray, done: bool) -> None:
+        self.buffer.add(obs, action, reward, next_obs, done)
+        self.total_steps += 1
+
+    def train_step(self) -> Dict[str, float]:
+        if len(self.buffer) < self.cfg.batch_size:
+            return {"loss": 0.0}
+
+        obs, actions, rewards, next_obs, dones = self.buffer.sample(self.cfg.batch_size, self.device)
+
+        q = self.online_net(obs).gather(1, actions.unsqueeze(1)).squeeze(1)
+
         with torch.no_grad():
-            t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-            return int(self.q(t).argmax(-1).item())
+            next_actions = self.online_net(next_obs).argmax(dim=1)
+            next_q_target = self.target_net(next_obs).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            target = rewards + (1.0 - dones) * self.cfg.gamma * next_q_target
 
-    def learn(self):
-        if len(self.buf) < self.batch:
-            return None
-        s, a, r, ns, d = self.buf.sample(self.batch)
-        s = torch.tensor(s, dtype=torch.float32, device=self.device)
-        a = torch.tensor(a, dtype=torch.long, device=self.device).unsqueeze(-1)
-        r = torch.tensor(r, dtype=torch.float32, device=self.device).unsqueeze(-1)
-        ns = torch.tensor(ns, dtype=torch.float32, device=self.device)
-        d = torch.tensor(d, dtype=torch.float32, device=self.device).unsqueeze(-1)
-        q = self.q(s).gather(1, a)
-        na = self.q(ns).argmax(-1, keepdim=True)
-        nq = self.tgt(ns).gather(1, na)
-        y = r + self.gamma * (1 - d) * nq
-        loss = F.mse_loss(q, y.detach())
-        self.opt.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(self.q.parameters(), 10.0); self.opt.step()
-        for tp, p in zip(self.tgt.parameters(), self.q.parameters()):
-            tp.data.copy_(tp.data * (1 - self.tau) + p.data * self.tau)
-        return float(loss.item())
+        loss = F.smooth_l1_loss(q, target)
 
-    def update(self, s, a, r, ns, done):
-        self.buf.push(s, a, r, ns, done)
-        self.step += 1
-        return self.learn()
+        self.optim.zero_grad(set_to_none=True)
+        loss.backward()
+        clip_grad_norm_(self.online_net.parameters(), self.cfg.grad_clip)
+        self.optim.step()
+
+        self.soft_update()
+
+        return {"loss": float(loss.item())}
+
+    def soft_update(self) -> None:
+        tau = self.cfg.tau
+        for tp, op in zip(self.target_net.parameters(), self.online_net.parameters()):
+            tp.data.copy_(tau * op.data + (1.0 - tau) * tp.data)
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "online": self.online_net.state_dict(),
+                "target": self.target_net.state_dict(),
+                "optim": self.optim.state_dict(),
+                "total_steps": self.total_steps,
+                "cfg": self.cfg.__dict__,
+            },
+            path,
+        )
+        # Save replay buffer as sidecar file
+        buf_path = path.with_suffix(".buf")
+        with open(buf_path, "wb") as f:
+            pickle.dump(self.buffer, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def load_buffer(self, path: str | Path) -> None:
+        buf_path = Path(path).with_suffix(".buf")
+        if buf_path.exists():
+            with open(buf_path, "rb") as f:
+                self.buffer = pickle.load(f)
+            print(f"[DqnAgent] Replay buffer restored: {len(self.buffer)} transitions")
+        else:
+            print(f"[DqnAgent] No buffer sidecar found at {buf_path} — starting empty")
