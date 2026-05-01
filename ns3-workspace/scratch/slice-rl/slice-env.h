@@ -94,6 +94,7 @@ class NrSliceGymEnv : public OpenGymEnv
     std::unordered_map<uint16_t, uint8_t> m_rntiToSlice;
     std::unordered_map<uint32_t, uint64_t> m_prevRxPackets{};
     std::unordered_map<uint32_t, double>   m_prevDelaySum{};
+    std::unordered_map<uint32_t, uint64_t> m_prevTxPackets{};
 
     bool m_rntiMapReady{false};
     bool m_gameOver{false};
