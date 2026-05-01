@@ -1,7 +1,7 @@
 env:
   max_thr_mbps:
     eMBB: 100.0
-    URLLC: 15.0
+    URLLC: 10.0 # was 15.0
     mMTC: 2.0
   min_thr_mbps:
     eMBB: 10.0
@@ -18,11 +18,11 @@ train:
   save_every: 10
 
 dqn:
-  lr: 0.0001   #was 0.001 then second change to 0.0003 
+  lr: 0.0001 #was 0.001 then second change to 0.0003 
   gamma: 0.99
   batch_size: 64
   buffer_size: 50000
-  tau: 0.001   # was 0.005
+  tau: 0.001 # was 0.005
   eps_start: 1.0
   eps_end: 0.01
   eps_decay_steps: 50000  # was 20000
