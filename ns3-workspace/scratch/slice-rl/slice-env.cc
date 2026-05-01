@@ -406,7 +406,8 @@ NrSliceGymEnv::AggregateFlowStats()
 
     const auto stats = m_flowMonitor->GetFlowStats();
     std::array<uint32_t, kSliceCount> packetsPerSlice{0, 0, 0};
-
+    std::array<uint32_t, kSliceCount> flowsPerSlice{0, 0, 0};
+    
     for (const auto& [flowId, st] : stats)
     {
         Ipv4FlowClassifier::FiveTuple fiveTuple =
@@ -443,21 +444,25 @@ NrSliceGymEnv::AggregateFlowStats()
             ++packetsPerSlice[slice];
         }
 
-        const uint64_t tx = st.txPackets;
-        const uint64_t rx = st.rxPackets;
-        if (tx > 0)
-        {
+            const uint64_t prevTx  = m_prevTxPackets.count(flowId)
+                             ? m_prevTxPackets[flowId] : 0;
+            const uint64_t deltaTx = (st.txPackets >= prevTx)
+                             ? (st.txPackets - prevTx) : 0;
+            const uint64_t deltaDrop = (deltaTx > deltaPkts)
+                             ? (deltaTx - deltaPkts) : 0;
+            m_prevTxPackets[flowId] = st.txPackets;
+        if (deltaTx > 0)
             m_queueOcc[slice] +=
-                static_cast<double>(tx - rx) / static_cast<double>(tx);
-        }
+                static_cast<double>(deltaDrop) / static_cast<double>(deltaTx);
+        ++flowsPerSlice[slice];
     }
 
-    for (uint8_t s = 0; s < kSliceCount; ++s)
+        for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         if (packetsPerSlice[s] > 0)
-        {
             m_latMs[s] /= packetsPerSlice[s];
-        }
+        if (flowsPerSlice[s] > 0)           
+            m_queueOcc[s] /= flowsPerSlice[s]; 
         m_queueOcc[s] = std::min(1.0, std::max(0.0, m_queueOcc[s]));
     }
 }
@@ -500,70 +505,64 @@ NrSliceGymEnv::ScheduleStep()
     //     gradient above AND below the SLA threshold, not just a cliff.
     //   - All three positive terms normalised to [0,1]; max reward = 1.0/step.
     // -----------------------------------------------------------------------
-    double thrNormAvg   = 0.0;
-    double slaMarginAvg = 0.0;
-    uint32_t slaViolations = 0;
-    std::array<double, kSliceCount> efficiency{};
+double thrNormAvg   = 0.0;
+double slaMarginAvg = 0.0;
+uint32_t slaViolations = 0;
+double esum  = 0.0;
+double esum2 = 0.0;
+uint32_t activeSlices = 0;
 
-    for (uint8_t s = 0; s < kSliceCount; ++s)
+for (uint8_t s = 0; s < kSliceCount; ++s)
+{
+    const double thrNorm =
+        std::min(1.0, m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]));
+    const double prbFrac =
+        static_cast<double>(m_prbAlloc[s]) /
+        static_cast<double>(m_cfg.totalPrbs);
+
+    const bool slaSat =
+        (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
+        (m_latMs[s]   <= m_cfg.maxLatMs[s]);
+
+    const double thrMargin = std::max(-1.0, std::min(1.0,
+        (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
+        std::max(1e-9, m_cfg.minThrMbps[s])));
+    const double latMargin = std::max(-1.0, std::min(1.0,
+        (m_cfg.maxLatMs[s] - m_latMs[s]) /
+        std::max(1e-9, m_cfg.maxLatMs[s])));
+
+    const bool mmtcInactive = (s == MMTC && m_thrMbps[s] < 0.001);
+    slaViolations += (slaSat || mmtcInactive) ? 0 : 1;
+
+    if (!mmtcInactive)
     {
-        const double thrNorm =
-            std::min(1.0, m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]));
-        const double prbFrac =
-            static_cast<double>(m_prbAlloc[s]) /
-            static_cast<double>(m_cfg.totalPrbs);
-
-        // SLA check (unchanged semantics)
-        const bool slaSat =
-            (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
-            (m_latMs[s]   <= m_cfg.maxLatMs[s]);
-
-        // Continuous SLA margin: +1 = comfortably above, 0 = exactly at
-        // threshold, -1 = far below. Clamped to [-1, +1].
-        const double thrMargin = std::max(-1.0, std::min(1.0,
-            (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
-            std::max(1e-9, m_cfg.minThrMbps[s])));
-        const double latMargin = std::max(-1.0, std::min(1.0,
-            (m_cfg.maxLatMs[s] - m_latMs[s]) /
-            std::max(1e-9, m_cfg.maxLatMs[s])));
-
         thrNormAvg   += thrNorm;
-        slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;  // in [-1,+1]
-        // Inactive mMTC (IoT duty-cycle off-period) is physics, not a policy
-        // failure. Exclude from violation penalty; keep in Jain fairness above.
-        const bool mmtcInactive = (s == MMTC && m_thrMbps[s] < 0.001);
-        slaViolations += (slaSat || mmtcInactive) ? 0 : 1;
-
-        // PRB efficiency: normalised throughput delivered per unit PRB
-        // fraction. High for slices that use their PRBs well; low for
-        // slices that hoard PRBs without delivering throughput.
-        efficiency[s] = thrNorm / std::max(1e-9, prbFrac);
+        slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
+        const double eff = thrNorm / std::max(1e-9, prbFrac);
+        esum  += eff;
+        esum2 += eff * eff;
+        ++activeSlices;
     }
+}
 
-    thrNormAvg   /= kSliceCount;
-    slaMarginAvg /= kSliceCount;   // in [-1, +1]
+const uint32_t n = std::max(1u, activeSlices);
+thrNormAvg   /= n;
+slaMarginAvg /= n;
+const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
+const double effJain = (esum2 > 0.0)
+    ? ((esum * esum) / (n * esum2))
+    : 1.0;   // default fair when no active slices
 
-    // Map slaMarginAvg from [-1,+1] to [0,1] so all positive terms share
-    // the same scale and the formula is easy to reason about.
-    const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
-
-    // Jain's fairness index on PRB efficiency (not raw throughput).
-    // Balanced allocations score near 1.0; degenerate ones score << 1.0.
-    const double esum =
-        std::accumulate(efficiency.begin(), efficiency.end(), 0.0);
-    double esum2 = 0.0;
-    for (double e : efficiency)
-    {
-        esum2 += e * e;
-    }
-    const double effJain =
-        (esum2 > 0.0) ? ((esum * esum) / (kSliceCount * esum2)) : 0.0;
+    NS_LOG_UNCOND("[TEST-C] thrNormAvg=" << thrNormAvg
+    << " slaMarginNorm=" << slaMarginNorm
+    << " effJain=" << effJain
+    << " violations=" << slaViolations);
 
     m_reward = static_cast<float>(
-        0.35 * thrNormAvg    +
-        0.30 * slaMarginNorm +
-        0.35 * effJain       -
-        2.0  * static_cast<double>(slaViolations));
+     0.35 * thrNormAvg    +
+     0.30 * slaMarginNorm +
+     0.35 * effJain       -
+     2.0  * static_cast<double>(slaViolations));
 
     m_gameOver = Simulator::Now() >= m_cfg.simTime;
     Notify();
