@@ -615,27 +615,41 @@ for (uint8_t s = 0; s < kSliceCount; ++s)
         (m_cfg.maxLatMs[s] - m_latMs[s]) /
         std::max(1e-9, m_cfg.maxLatMs[s])));
 
-    const bool mmtcInactive = (s == MMTC && m_thrMbps[s] < 0.001);
-    slaViolations += (slaSat || mmtcInactive) ? 0 : 1;
+	// A slice is "inactive" when the traffic source is in an exponential
+	// off-period and genuinely not transmitting. In this case a zero-
+	// throughput reading is not a policy failure — it is the correct
+	// physical behavior of the OnOff traffic model. Penalising the agent
+	// for off-period steps would introduce uncontrollable noise into the
+	// reward signal and bias the policy to over-allocate PRBs to silent
+	// slices.
+	//
+	// Duty cycles: mMTC ~10% (on=1s, off=9s), URLLC ~20% (on=50ms, off=200ms).
+	// Both are frequently silent within a 100ms step window.
+	// eMBB ~67% (on=2s, off=1s) — rarely fully silent, no exclusion needed.
+	const bool mmtcInactive  = (s == MMTC  && m_thrMbps[s] < 0.001);
+	const bool urllcInactive = (s == URLLC && m_thrMbps[s] < 0.001);
+	const bool sliceInactive = mmtcInactive || urllcInactive;
 
-    if (!mmtcInactive)
-    {
-        thrNormAvg   += thrNorm;
-        slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
-        const double eff = thrNorm / std::max(1e-9, prbFrac);
-        esum  += eff;
-        esum2 += eff * eff;
-        ++activeSlices;
-    }
+	slaViolations += (slaSat || sliceInactive) ? 0 : 1;
+
+	if (!sliceInactive)
+	{
+    	 thrNormAvg   += thrNorm;
+   		 slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
+   		 const double eff = thrNorm / std::max(1e-9, prbFrac);
+		 esum  += eff;
+   		 esum2 += eff * eff;
+   		 ++activeSlices;
+	}
 }
 
-const uint32_t n = std::max(1u, activeSlices);
-thrNormAvg   /= n;
-slaMarginAvg /= n;
-const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
-const double effJain = (esum2 > 0.0)
-    ? ((esum * esum) / (n * esum2))
-    : 1.0;   // default fair when no active slices
+	const uint32_t n = std::max(1u, activeSlices);
+	thrNormAvg   /= n;
+	slaMarginAvg /= n;
+	const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
+	const double effJain = (esum2 > 0.0)
+	    ? ((esum * esum) / (n * esum2))
+	    : 1.0;   // default fair when no active slices
 
     
 
