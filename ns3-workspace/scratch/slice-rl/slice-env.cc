@@ -390,24 +390,20 @@ NrSliceGymEnv::ApplySliceWeights()
 void
 NrSliceGymEnv::AggregateHolDelay()
 {
-    // Accumulate per-slice Head-of-Line delay from the scheduler's
-    // LcObservation vector. HOL delay is the age of the oldest packet
-    // waiting in the MAC queue — it rises as the queue builds up,
-    // BEFORE any packet is dropped. This gives the agent a forward-looking
-    // congestion signal rather than the backward-looking drop ratio.
-    //
-    // Normalisation: holDelay is in milliseconds (uint16_t). We normalise
-    // by maxLatMs for each slice so the signal is directly interpretable
-    // as "fraction of SLA latency budget consumed by queuing alone."
-    // Values > 1.0 are clamped — they indicate the queue is already
-    // violating the latency SLA before radio transmission even begins.
+    // Ensure RNTI map is ready before iterating observations.
+    TryBuildRntiSliceMap();
 
-        m_holNorm.fill(0.0);
-
-    if (m_lastLcObservations.empty())
+    // If no fresh scheduler observations arrived this step, preserve the
+    // previous m_holNorm values (sample-and-hold). Resetting to zero would
+    // confuse the agent — zero means "no congestion," but the real meaning
+    // here is "no new data." The two cases must be distinguishable.
+    if (m_lastLcObservations.empty() || !m_rntiMapReady)
     {
-        return;
+        return;   // keep previous m_holNorm — do NOT fill(0.0)
     }
+
+    // Only zero-fill when we have fresh data to replace it with.
+    m_holNorm.fill(0.0);
 
     std::array<uint32_t, kSliceCount> lcCount{0, 0, 0};
     std::array<double,   kSliceCount> holSum {0.0, 0.0, 0.0};
@@ -426,7 +422,6 @@ NrSliceGymEnv::AggregateHolDelay()
             continue;
         }
 
-        // holDelay is uint16_t in milliseconds
         holSum[slice] += static_cast<double>(obs.holDelay);
         ++lcCount[slice];
     }
@@ -435,14 +430,12 @@ NrSliceGymEnv::AggregateHolDelay()
     {
         if (lcCount[s] == 0)
         {
-            m_holNorm[s] = 0.0;
+            // No UEs from this slice had observations this callback —
+            // keep previous value rather than zeroing.
             continue;
         }
 
         const double meanHolMs = holSum[s] / static_cast<double>(lcCount[s]);
-
-        // Normalise by maxLatMs — signal reads 1.0 when mean HOL equals
-        // the full SLA latency budget. Clamped to [0,1].
         m_holNorm[s] = Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s]));
     }
 }
@@ -455,18 +448,20 @@ NrSliceGymEnv::AggregateHolDelay()
 // Flow statistics aggregation
 // ---------------------------------------------------------------------------
 
+// Returns kSliceCount (== 3) as a sentinel for "unknown slice."
+// Callers must check for this value and skip the flow.
 uint8_t
 NrSliceGymEnv::ResolveSliceFromPort(uint16_t port) const
 {
-    if (port >= 1000 && port <= 1999)
-    {
-        return EMBB;
-    }
-    if (port >= 2000 && port <= 2999)
-    {
-        return URLLC;
-    }
-    return MMTC;
+    if (port >= 1000 && port <= 1999) return EMBB;
+    if (port >= 2000 && port <= 2999) return URLLC;
+    if (port >= 3000 && port <= 3999) return MMTC;
+
+    // Port outside all known slice ranges. Could be NS-3 internal control
+    // traffic, ARP, or routing messages. Return sentinel to skip this flow.
+    NS_LOG_DEBUG("ResolveSliceFromPort: unknown port " << port
+                 << " — flow will be excluded from slice statistics.");
+    return kSliceCount;   // sentinel: caller must check slice < kSliceCount
 }
 
 void
@@ -474,7 +469,8 @@ NrSliceGymEnv::AggregateFlowStats()
 {
     m_thrMbps.fill(0.0);
     m_latMs.fill(0.0);
-    m_queueOcc.fill(0.0);
+    // Note: m_queueOcc removed — observation channel [9:12] now uses
+    // m_holNorm (HOL-delay proxy) computed in AggregateHolDelay().
 
     if (!m_flowMonitor || !m_flowClassifier)
     {
@@ -482,36 +478,41 @@ NrSliceGymEnv::AggregateFlowStats()
     }
 
     const auto stats = m_flowMonitor->GetFlowStats();
-    
-    std::array<uint32_t, kSliceCount> flowsPerSlice{0, 0, 0};
-    std::array<double, kSliceCount> totalDeltaDelayMs{0.0, 0.0, 0.0};
+
+    std::array<double,   kSliceCount> totalDeltaDelayMs{0.0, 0.0, 0.0};
     std::array<uint64_t, kSliceCount> totalDeltaPkts{0, 0, 0};
-    
+
     for (const auto& [flowId, st] : stats)
     {
         Ipv4FlowClassifier::FiveTuple fiveTuple =
             m_flowClassifier->FindFlow(flowId);
-        const uint8_t slice =
-            ResolveSliceFromPort(fiveTuple.destinationPort);
 
-        const uint64_t prev       = m_prevRxBytes.count(flowId) ? m_prevRxBytes[flowId] : 0;
-        const uint64_t deltaBytes = (st.rxBytes >= prev) ? (st.rxBytes - prev) : st.rxBytes;
+        const uint8_t slice = ResolveSliceFromPort(fiveTuple.destinationPort);
+        if (slice >= kSliceCount)
+        {
+            continue;   // unknown port — skip to avoid polluting slice stats
+        }
+
+        // --- Throughput ---
+        const uint64_t prevBytes  = m_prevRxBytes.count(flowId)
+                                  ? m_prevRxBytes[flowId] : 0;
+        const uint64_t deltaBytes = (st.rxBytes >= prevBytes)
+                                  ? (st.rxBytes - prevBytes) : st.rxBytes;
         m_prevRxBytes[flowId]     = st.rxBytes;
-        const double thrMbps =
-            (m_cfg.stepInterval.GetSeconds() > 0.0)
-                ? (static_cast<double>(deltaBytes) * 8.0 / 1e6) /
-                      std::max(1e-9, m_cfg.stepInterval.GetSeconds())
-                : 0.0;
-        m_thrMbps[slice] += thrMbps;
 
-        const uint64_t prevPkts  = m_prevRxPackets.count(flowId) 
-                           ? m_prevRxPackets[flowId] : 0;
-        const double   prevDelay = m_prevDelaySum.count(flowId)  
-                           ? m_prevDelaySum[flowId]  : 0.0;
+        m_thrMbps[slice] +=
+            (static_cast<double>(deltaBytes) * 8.0 / 1e6) /
+            std::max(1e-9, m_cfg.stepInterval.GetSeconds());
+
+        // --- Latency ---
+        const uint64_t prevPkts   = m_prevRxPackets.count(flowId)
+                                  ? m_prevRxPackets[flowId] : 0;
+        const double   prevDelay  = m_prevDelaySum.count(flowId)
+                                  ? m_prevDelaySum[flowId]  : 0.0;
         const uint64_t deltaPkts  = (st.rxPackets >= prevPkts)
-                            ? (st.rxPackets - prevPkts) : 0;
+                                  ? (st.rxPackets - prevPkts) : 0;
         const double   deltaDelay = (st.delaySum.GetSeconds() >= prevDelay)
-                            ? (st.delaySum.GetSeconds() - prevDelay) : 0.0;
+                                  ? (st.delaySum.GetSeconds() - prevDelay) : 0.0;
 
         m_prevRxPackets[flowId] = st.rxPackets;
         m_prevDelaySum[flowId]  = st.delaySum.GetSeconds();
@@ -521,33 +522,18 @@ NrSliceGymEnv::AggregateFlowStats()
             totalDeltaDelayMs[slice] += deltaDelay * 1e3;
             totalDeltaPkts[slice]    += deltaPkts;
         }
-
-            const uint64_t prevTx  = m_prevTxPackets.count(flowId)
-                             ? m_prevTxPackets[flowId] : 0;
-            const uint64_t deltaTx = (st.txPackets >= prevTx)
-                             ? (st.txPackets - prevTx) : 0;
-            const uint64_t deltaDrop = (deltaTx > deltaPkts)
-                             ? (deltaTx - deltaPkts) : 0;
-            m_prevTxPackets[flowId] = st.txPackets;
-        
-        
-        if (deltaTx > 0)
-            m_queueOcc[slice] +=
-                static_cast<double>(deltaDrop) / static_cast<double>(deltaTx);
-        ++flowsPerSlice[slice];
     }
 
-        for (uint8_t s = 0; s < kSliceCount; ++s)
+    // Finalise per-slice latency as mean delay across all received packets.
+    for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         if (totalDeltaPkts[s] > 0)
-             m_latMs[s] = totalDeltaDelayMs[s] / static_cast<double>(totalDeltaPkts[s]);
-            
-        if (flowsPerSlice[s] > 0)           
-            m_queueOcc[s] /= flowsPerSlice[s]; 
-        m_queueOcc[s] = std::min(1.0, std::max(0.0, m_queueOcc[s]));
+        {
+            m_latMs[s] = totalDeltaDelayMs[s] /
+                         static_cast<double>(totalDeltaPkts[s]);
+        }
     }
 }
-
 // ---------------------------------------------------------------------------
 // Scheduled step — observation + reward + notify
 // ---------------------------------------------------------------------------
