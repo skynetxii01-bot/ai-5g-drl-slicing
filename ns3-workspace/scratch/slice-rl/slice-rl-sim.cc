@@ -1,7 +1,7 @@
 #include "slice-env.h"
 
 #if __has_include("ns3/opengym-module.h")
-#define HAVE_OPENGYM
+
 #endif
 
 #ifdef HAVE_OPENGYM
