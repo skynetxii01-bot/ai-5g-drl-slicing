@@ -95,7 +95,7 @@ class NrSliceGymEnv : public OpenGymEnv
     std::unordered_map<uint16_t, uint8_t> m_rntiToSlice;
     std::unordered_map<uint32_t, uint64_t> m_prevRxPackets{};
     std::unordered_map<uint32_t, double>   m_prevDelaySum{};
-    std::unordered_map<uint32_t, uint64_t> m_prevTxPackets{};
+    
 
     bool m_rntiMapReady{false};
     bool m_gameOver{false};
@@ -113,7 +113,7 @@ class NrSliceGymEnv : public OpenGymEnv
 
     std::array<double, kSliceCount> m_thrMbps{};
     std::array<double, kSliceCount> m_latMs{};
-    std::array<double, kSliceCount> m_queueOcc{};
+    
     std::array<double, kSliceCount> m_holNorm{};   // HOL delay normalised to [0,1]
     std::array<uint32_t, kSliceCount> m_uesPerSlice{};
     std::unordered_map<uint32_t, uint64_t> m_prevRxBytes{};
