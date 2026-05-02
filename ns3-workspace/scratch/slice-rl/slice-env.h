@@ -75,6 +75,7 @@ class NrSliceGymEnv : public OpenGymEnv
   private:
     void ScheduleStep();
     void AggregateFlowStats();
+    void AggregateHolDelay();
     void ApplySliceWeights();
     void EnforceConstraints();
 
@@ -113,6 +114,7 @@ class NrSliceGymEnv : public OpenGymEnv
     std::array<double, kSliceCount> m_thrMbps{};
     std::array<double, kSliceCount> m_latMs{};
     std::array<double, kSliceCount> m_queueOcc{};
+    std::array<double, kSliceCount> m_holNorm{};   // HOL delay normalised to [0,1]
     std::array<uint32_t, kSliceCount> m_uesPerSlice{};
     std::unordered_map<uint32_t, uint64_t> m_prevRxBytes{};
 };
