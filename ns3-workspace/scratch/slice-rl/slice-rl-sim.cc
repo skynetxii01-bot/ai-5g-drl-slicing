@@ -229,8 +229,7 @@ main(int argc, char* argv[])
         ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
     }
 
-    Ipv4Address remoteHostAddr = internetIpIfaces.GetAddress(1);
-    (void)remoteHostAddr;
+
 
     // eMBB: video-like bursts.  Peak=10Mbps, on~2s, off~1s → avg≈6.63 Mbps/UE
     //       Duty cycle 67 % — frequently above SLA threshold, creating real PRB pressure.
