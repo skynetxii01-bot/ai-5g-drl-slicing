@@ -387,6 +387,70 @@ NrSliceGymEnv::ApplySliceWeights()
     }
 }
 
+void
+NrSliceGymEnv::AggregateHolDelay()
+{
+    // Accumulate per-slice Head-of-Line delay from the scheduler's
+    // LcObservation vector. HOL delay is the age of the oldest packet
+    // waiting in the MAC queue — it rises as the queue builds up,
+    // BEFORE any packet is dropped. This gives the agent a forward-looking
+    // congestion signal rather than the backward-looking drop ratio.
+    //
+    // Normalisation: holDelay is in milliseconds (uint16_t). We normalise
+    // by maxLatMs for each slice so the signal is directly interpretable
+    // as "fraction of SLA latency budget consumed by queuing alone."
+    // Values > 1.0 are clamped — they indicate the queue is already
+    // violating the latency SLA before radio transmission even begins.
+
+        m_holNorm.fill(0.0);
+
+    if (m_lastLcObservations.empty())
+    {
+        return;
+    }
+
+    std::array<uint32_t, kSliceCount> lcCount{0, 0, 0};
+    std::array<double,   kSliceCount> holSum {0.0, 0.0, 0.0};
+
+    for (const auto& obs : m_lastLcObservations)
+    {
+        auto it = m_rntiToSlice.find(obs.rnti);
+        if (it == m_rntiToSlice.end())
+        {
+            continue;
+        }
+
+        const uint8_t slice = it->second;
+        if (slice >= kSliceCount)
+        {
+            continue;
+        }
+
+        // holDelay is uint16_t in milliseconds
+        holSum[slice] += static_cast<double>(obs.holDelay);
+        ++lcCount[slice];
+    }
+
+    for (uint8_t s = 0; s < kSliceCount; ++s)
+    {
+        if (lcCount[s] == 0)
+        {
+            m_holNorm[s] = 0.0;
+            continue;
+        }
+
+        const double meanHolMs = holSum[s] / static_cast<double>(lcCount[s]);
+
+        // Normalise by maxLatMs — signal reads 1.0 when mean HOL equals
+        // the full SLA latency budget. Clamped to [0,1].
+        m_holNorm[s] = Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s]));
+    }
+}
+	
+
+	
+
+
 // ---------------------------------------------------------------------------
 // Flow statistics aggregation
 // ---------------------------------------------------------------------------
@@ -498,6 +562,7 @@ NrSliceGymEnv::ScheduleStep()
 
     ++m_stepCount;
     AggregateFlowStats();
+    AggregateHolDelay();
 
     // Build normalised observation vector
     for (uint8_t s = 0; s < kSliceCount; ++s)
@@ -506,7 +571,9 @@ NrSliceGymEnv::ScheduleStep()
                                         m_cfg.totalPrbs);
         m_observation[3 + s]  = Clamp01(m_thrMbps[s] / m_cfg.maxThrMbps[s]);
         m_observation[6 + s]  = Clamp01(m_latMs[s] / (2.0 * m_cfg.maxLatMs[s]));
-        m_observation[9 + s]  = Clamp01(m_queueOcc[s]);
+        // obs[9:12] — HOL-delay congestion proxy, normalised by per-slice maxLatMs.
+        // Rises before packet drops occur, giving the agent a pre-emptive signal.
+        m_observation[9 + s]  = m_holNorm[s];
         m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) /
                                          m_cfg.maxUes[s]);
     }
