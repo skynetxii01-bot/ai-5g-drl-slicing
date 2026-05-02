@@ -38,7 +38,7 @@ class NrSliceGymEnv : public OpenGymEnv
         std::array<uint16_t, kSliceCount> initialPrbAlloc{10, 8, 7};
         std::array<uint32_t, kSliceCount> maxUes{10, 5, 20};
         std::array<double, kSliceCount> maxThrMbps{100.0, 10.0, 2.0};
-        std::array<double, kSliceCount> maxLatMs{100.0, 10.0, 1000.0};
+        std::array<double, kSliceCount> maxLatMs{50.0, 15.0, 500.0};
         std::array<double, kSliceCount> minThrMbps{10.0, 1.0, 0.1};
     };
 
