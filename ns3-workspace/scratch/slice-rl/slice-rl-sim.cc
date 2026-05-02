@@ -271,7 +271,7 @@ main(int argc, char* argv[])
                                                                                mmtcDevs};
     gymEnv->SetFlowMonitor(monitor, classifier);
     gymEnv->Initialize(cfg, nrHelper, gnbDevs, ueDevsBySlice);
-    gymEnv->BuildImsiSliceMap();
+    
 
     Simulator::Stop(Seconds(simTimeSeconds + 0.1));
     Simulator::Run();
