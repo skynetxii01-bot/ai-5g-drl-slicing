@@ -363,9 +363,22 @@ NrSliceGymEnv::ApplySliceWeights()
         const double ueCount =
             static_cast<double>(std::max<uint32_t>(1, m_uesPerSlice[slice]));
         const double weight = sliceFrac / ueCount;
+		// UeWeightsMap uses uint8_t keys — a 5G-LENA API constraint.
+		// Guard against silent wrap-around if RNTI ever exceeds 255.
+		// With 35 UEs this never triggers, but the failure would be
+		// undetectable without this check.
+		
+		if (rnti16 > 255)
+		        {
+		            NS_LOG_ERROR("ApplySliceWeights: RNTI " << rnti16
+		                         << " exceeds uint8_t range — skipping UE to prevent "
+		                         << "key collision in UeWeightsMap. This is a 5G-LENA "
+		                         << "API limitation (UeWeightsMap outer key is uint8_t).");
+		            continue;
+		        }
 
-        const uint8_t rnti8 = static_cast<uint8_t>(rnti16);
-        weightsMap[rnti8][lcId] = weight;
+		
+        weightsMap[static_cast<uint8_t>(rnti16)][lcId] = weight;
     }
 
     if (!weightsMap.empty())
