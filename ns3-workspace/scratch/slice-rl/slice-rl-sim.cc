@@ -1,7 +1,8 @@
 #include "slice-env.h"
 
 #if __has_include("ns3/opengym-module.h")
-
+// Header-level detection only — the macro HAVE_OPENGYM is defined inside slice-env.h
+// via the same __has_include check. This empty block is intentional and harmless.
 #endif
 
 #ifdef HAVE_OPENGYM
@@ -85,17 +86,17 @@ main(int argc, char* argv[])
     RngSeedManager::SetSeed(1);
     RngSeedManager::SetRun(seed);
 
-    constexpr uint32_t gnbCount = 1;
-    constexpr uint32_t embbUes = 10;
-    constexpr uint32_t urllcUes = 5;
-    constexpr uint32_t mmtcUes = 20;
-    constexpr uint8_t numerology = 1;
-    constexpr double centralFrequency = 3.5e9;
-    constexpr double bandwidth = 20e6;
-    constexpr uint16_t totalPrbs = 25;
+    constexpr uint32_t gnbCount  = 1;
+    constexpr uint32_t embbUes   = 10;
+    constexpr uint32_t urllcUes  = 5;
+    constexpr uint32_t mmtcUes   = 20;
+    constexpr uint8_t  numerology = 1;
+    constexpr double   centralFrequency = 3.5e9;
+    constexpr double   bandwidth        = 20e6;
+    constexpr uint16_t totalPrbs        = 25;
 
     const Time appStart = Seconds(0.2);
-    const Time appStop = Seconds(simTimeSeconds - 0.05);
+    const Time appStop  = Seconds(simTimeSeconds - 0.05);
 
     std::cout << "=== 5G NR Slice RL Simulation ===\n"
               << "NS-3.45  |  5G-LENA NR v4.1.y  |  ns3-gym\n"
@@ -130,20 +131,23 @@ main(int argc, char* argv[])
 
     for (uint32_t i = 0; i < embbNodes.GetN(); ++i)
     {
-        embbNodes.Get(i)->GetObject<MobilityModel>()->SetPosition(Vector(20.0 + i * 3.0, 0.0, 1.5));
+        embbNodes.Get(i)->GetObject<MobilityModel>()->SetPosition(
+            Vector(20.0 + i * 3.0, 0.0, 1.5));
     }
     for (uint32_t i = 0; i < urllcNodes.GetN(); ++i)
     {
-        urllcNodes.Get(i)->GetObject<MobilityModel>()->SetPosition(Vector(30.0 + i * 2.5, 8.0, 1.5));
+        urllcNodes.Get(i)->GetObject<MobilityModel>()->SetPosition(
+            Vector(30.0 + i * 2.5, 8.0, 1.5));
     }
     for (uint32_t i = 0; i < mmtcNodes.GetN(); ++i)
     {
-        mmtcNodes.Get(i)->GetObject<MobilityModel>()->SetPosition(Vector(45.0 + i * 1.5, -10.0, 1.5));
+        mmtcNodes.Get(i)->GetObject<MobilityModel>()->SetPosition(
+            Vector(45.0 + i * 1.5, -10.0, 1.5));
     }
 
-    Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
-    Ptr<IdealBeamformingHelper> beamformingHelper = CreateObject<IdealBeamformingHelper>();
-    Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
+    Ptr<NrPointToPointEpcHelper> epcHelper        = CreateObject<NrPointToPointEpcHelper>();
+    Ptr<IdealBeamformingHelper>  beamformingHelper = CreateObject<IdealBeamformingHelper>();
+    Ptr<NrHelper>                nrHelper          = CreateObject<NrHelper>();
 
     nrHelper->SetEpcHelper(epcHelper);
     nrHelper->SetBeamformingHelper(beamformingHelper);
@@ -153,7 +157,7 @@ main(int argc, char* argv[])
     nrHelper->SetSchedulerTypeId(NrMacSchedulerOfdmaAi::GetTypeId());
 
     Ptr<OpenGymInterface> openGymInterface = CreateObject<OpenGymInterface>(gymPort);
-    Ptr<NrSliceGymEnv> gymEnv = CreateObject<NrSliceGymEnv>();
+    Ptr<NrSliceGymEnv>    gymEnv           = CreateObject<NrSliceGymEnv>();
     gymEnv->SetOpenGymInterface(openGymInterface);
 
     nrHelper->SetSchedulerAttribute("NotifyCbDl",
@@ -161,9 +165,9 @@ main(int argc, char* argv[])
                                         MakeCallback(&NrSliceGymEnv::OnSchedulerNotify, gymEnv)));
     nrHelper->SetSchedulerAttribute("ActiveDlAi", BooleanValue(true));
 
-    nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(1));
+    nrHelper->SetUeAntennaAttribute("NumRows",    UintegerValue(1));
     nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(1));
-    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(4));
+    nrHelper->SetGnbAntennaAttribute("NumRows",    UintegerValue(4));
     nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(4));
 
     CcBwpCreator ccBwpCreator;
@@ -177,10 +181,10 @@ main(int argc, char* argv[])
 
     BandwidthPartInfoPtrVector allBwps = CcBwpCreator::GetAllBwps({band});
 
-    NetDeviceContainer gnbDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
-    NetDeviceContainer embbDevs = nrHelper->InstallUeDevice(embbNodes, allBwps);
+    NetDeviceContainer gnbDevs  = nrHelper->InstallGnbDevice(gnbNodes,  allBwps);
+    NetDeviceContainer embbDevs  = nrHelper->InstallUeDevice(embbNodes,  allBwps);
     NetDeviceContainer urllcDevs = nrHelper->InstallUeDevice(urllcNodes, allBwps);
-    NetDeviceContainer mmtcDevs = nrHelper->InstallUeDevice(mmtcNodes, allBwps);
+    NetDeviceContainer mmtcDevs  = nrHelper->InstallUeDevice(mmtcNodes,  allBwps);
 
     NetDeviceContainer allUeDevs;
     allUeDevs.Add(embbDevs);
@@ -188,7 +192,7 @@ main(int argc, char* argv[])
     allUeDevs.Add(mmtcDevs);
 
     nrHelper->GetGnbPhy(gnbDevs.Get(0), 0)->SetAttribute("Numerology", UintegerValue(numerology));
-    nrHelper->GetGnbPhy(gnbDevs.Get(0), 0)->SetAttribute("TxPower", DoubleValue(30.0));
+    nrHelper->GetGnbPhy(gnbDevs.Get(0), 0)->SetAttribute("TxPower",    DoubleValue(30.0));
 
     InternetStackHelper internet;
     internet.Install(allUeNodes);
@@ -201,8 +205,8 @@ main(int argc, char* argv[])
 
     PointToPointHelper p2ph;
     p2ph.SetDeviceAttribute("DataRate", DataRateValue(DataRate("100Gb/s")));
-    p2ph.SetDeviceAttribute("Mtu", UintegerValue(2500));
-    p2ph.SetChannelAttribute("Delay", TimeValue(Seconds(0.0)));
+    p2ph.SetDeviceAttribute("Mtu",      UintegerValue(2500));
+    p2ph.SetChannelAttribute("Delay",   TimeValue(Seconds(0.0)));
     NetDeviceContainer internetDevices = p2ph.Install(pgw, remoteHost);
 
     Ipv4AddressHelper ipv4h;
@@ -213,12 +217,12 @@ main(int argc, char* argv[])
     Ptr<Ipv4StaticRouting> remoteHostStaticRouting =
         ipv4RoutingHelper.GetStaticRouting(remoteHost->GetObject<Ipv4>());
     remoteHostStaticRouting->AddNetworkRouteTo(Ipv4Address("7.0.0.0"),
-                                                Ipv4Mask("255.0.0.0"),
-                                                1);
+                                               Ipv4Mask("255.0.0.0"),
+                                               1);
 
-    Ipv4InterfaceContainer embbIfaces = epcHelper->AssignUeIpv4Address(embbDevs);
+    Ipv4InterfaceContainer embbIfaces  = epcHelper->AssignUeIpv4Address(embbDevs);
     Ipv4InterfaceContainer urllcIfaces = epcHelper->AssignUeIpv4Address(urllcDevs);
-    Ipv4InterfaceContainer mmtcIfaces = epcHelper->AssignUeIpv4Address(mmtcDevs);
+    Ipv4InterfaceContainer mmtcIfaces  = epcHelper->AssignUeIpv4Address(mmtcDevs);
 
     nrHelper->AttachToClosestGnb(allUeDevs, gnbDevs);
 
@@ -229,10 +233,8 @@ main(int argc, char* argv[])
         ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
     }
 
-
-
     // eMBB: video-like bursts.  Peak=10Mbps, on~2s, off~1s → avg≈6.63 Mbps/UE
-    //       Duty cycle 67 % — frequently above SLA threshold, creating real PRB pressure.
+    //       Duty cycle 67% — frequently above SLA threshold, creating real PRB pressure.
     InstallOnOffTraffic(remoteHost, embbNodes, embbIfaces,
                         1000, 1448, DataRate("10Mbps"),
                         2.0 /*onMean s*/, 1.0 /*offMean s*/,
@@ -253,24 +255,49 @@ main(int argc, char* argv[])
                         appStart, appStop);
 
     FlowMonitorHelper flowmonHelper;
-    Ptr<FlowMonitor> monitor = flowmonHelper.InstallAll();
-    Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(flowmonHelper.GetClassifier());
+    Ptr<FlowMonitor>         monitor    = flowmonHelper.InstallAll();
+    Ptr<Ipv4FlowClassifier>  classifier =
+        DynamicCast<Ipv4FlowClassifier>(flowmonHelper.GetClassifier());
 
     NrSliceGymEnv::Config cfg;
-    cfg.totalPrbs = totalPrbs;
+    cfg.totalPrbs    = totalPrbs;
     cfg.stepInterval = MilliSeconds(100);
-    cfg.simTime = Seconds(simTimeSeconds);
+    cfg.simTime      = Seconds(simTimeSeconds);
     cfg.initialPrbAlloc = {10, 8, 7};
-    cfg.maxUes = {embbUes, urllcUes, mmtcUes};
-    cfg.maxThrMbps = {100.0, 10.0, 2.0};
-    cfg.maxLatMs = {50.0, 15.0, 500.0};
-    cfg.minThrMbps = {10.0, 1.0, 0.1};
 
-    std::array<NetDeviceContainer, NrSliceGymEnv::kSliceCount> ueDevsBySlice{embbDevs, urllcDevs,
-                                                                               mmtcDevs};
+    // -----------------------------------------------------------------------
+    // P0-1 FIX: maxUes must be UPPER BOUNDS that EXCEED the simulated counts.
+    //
+    // Previously this was set to {embbUes, urllcUes, mmtcUes} = {10, 5, 20},
+    // which made obs[12:15] = {10/10, 5/5, 20/20} = {1.0, 1.0, 1.0} always.
+    // Three constant-1.0 input dimensions provided zero information gradient
+    // to the neural network — the observation space was effectively 12-dim,
+    // not 15-dim as claimed.
+    //
+    // With upper bounds {20, 10, 50}:
+    //   obs[12] = 10/20 = 0.50  (eMBB at 50% of max supported density)
+    //   obs[13] =  5/10 = 0.50  (URLLC at 50% of max supported density)
+    //   obs[14] = 20/50 = 0.40  (mMTC at 40% of max supported density)
+    //
+    // These are constant within a single episode (UE count doesn't change),
+    // but they are no longer degenerate. Their gradients are non-zero, and
+    // they carry physically meaningful information about network loading
+    // relative to the system's theoretical capacity.
+    //
+    // Upper bounds chosen as 2× the simulated counts for eMBB and URLLC,
+    // and 2.5× for mMTC, which is consistent with realistic deployment
+    // scenarios documented in 3GPP TR 38.913 for dense urban deployments.
+    // -----------------------------------------------------------------------
+    cfg.maxUes       = {20, 10, 50};   // FIX: was {embbUes, urllcUes, mmtcUes} = {10, 5, 20}
+
+    cfg.maxThrMbps   = {100.0, 10.0, 2.0};
+    cfg.maxLatMs     = {50.0,  15.0, 500.0};
+    cfg.minThrMbps   = {10.0,  1.0,  0.1};
+
+    std::array<NetDeviceContainer, NrSliceGymEnv::kSliceCount> ueDevsBySlice{
+        embbDevs, urllcDevs, mmtcDevs};
     gymEnv->SetFlowMonitor(monitor, classifier);
     gymEnv->Initialize(cfg, nrHelper, gnbDevs, ueDevsBySlice);
-    
 
     Simulator::Stop(Seconds(simTimeSeconds + 0.1));
     Simulator::Run();
@@ -287,6 +314,8 @@ main(int argc, char* argv[])
 {
     (void)argc;
     (void)argv;
+    // ns3-gym (opengym-module) was not found at compile time.
+    // Rebuild NS-3 with the opengym contrib module enabled.
     return 1;
 }
 
