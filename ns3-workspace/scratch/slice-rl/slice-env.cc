@@ -20,32 +20,32 @@ namespace
 {
 constexpr std::array<std::array<int8_t, NrSliceGymEnv::kSliceCount>, NrSliceGymEnv::kActionCount>
     kActionDelta = {{{-1, -1, -1},
-                     {-1, -1, 0},
-                     {-1, -1, 1},
-                     {-1, 0, -1},
-                     {-1, 0, 0},
-                     {-1, 0, 1},
-                     {-1, 1, -1},
-                     {-1, 1, 0},
-                     {-1, 1, 1},
-                     {0, -1, -1},
-                     {0, -1, 0},
-                     {0, -1, 1},
-                     {0, 0, -1},
-                     {0, 0, 0},
-                     {0, 0, 1},
-                     {0, 1, -1},
-                     {0, 1, 0},
-                     {0, 1, 1},
-                     {1, -1, -1},
-                     {1, -1, 0},
-                     {1, -1, 1},
-                     {1, 0, -1},
-                     {1, 0, 0},
-                     {1, 0, 1},
-                     {1, 1, -1},
-                     {1, 1, 0},
-                     {1, 1, 1}}};
+                     {-1, -1,  0},
+                     {-1, -1,  1},
+                     {-1,  0, -1},
+                     {-1,  0,  0},
+                     {-1,  0,  1},
+                     {-1,  1, -1},
+                     {-1,  1,  0},
+                     {-1,  1,  1},
+                     { 0, -1, -1},
+                     { 0, -1,  0},
+                     { 0, -1,  1},
+                     { 0,  0, -1},
+                     { 0,  0,  0},
+                     { 0,  0,  1},
+                     { 0,  1, -1},
+                     { 0,  1,  0},
+                     { 0,  1,  1},
+                     { 1, -1, -1},
+                     { 1, -1,  0},
+                     { 1, -1,  1},
+                     { 1,  0, -1},
+                     { 1,  0,  0},
+                     { 1,  0,  1},
+                     { 1,  1, -1},
+                     { 1,  1,  0},
+                     { 1,  1,  1}}};
 
 float
 Clamp01(double v)
@@ -84,11 +84,11 @@ NrSliceGymEnv::Initialize(const Config& cfg,
                           const NetDeviceContainer& gnbDevs,
                           const std::array<NetDeviceContainer, kSliceCount>& ueDevsBySlice)
 {
-    m_cfg          = cfg;
-    m_nrHelper     = nrHelper;
-    m_gnbDevs      = gnbDevs;
+    m_cfg           = cfg;
+    m_nrHelper      = nrHelper;
+    m_gnbDevs       = gnbDevs;
     m_ueDevsBySlice = ueDevsBySlice;
-    m_prbAlloc     = cfg.initialPrbAlloc;
+    m_prbAlloc      = cfg.initialPrbAlloc;
 
     m_uesPerSlice = {
         ueDevsBySlice[EMBB].GetN(),
@@ -107,8 +107,8 @@ void
 NrSliceGymEnv::SetFlowMonitor(const Ptr<FlowMonitor>& flowMonitor,
                               const Ptr<Ipv4FlowClassifier>& flowClassifier)
 {
-    m_flowMonitor     = flowMonitor;
-    m_flowClassifier  = flowClassifier;
+    m_flowMonitor    = flowMonitor;
+    m_flowClassifier = flowClassifier;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +277,7 @@ NrSliceGymEnv::ExecuteActions(Ptr<OpenGymDataContainer> action)
 }
 
 // ---------------------------------------------------------------------------
-// BUG-03 FIX — EnforceConstraints
+// EnforceConstraints — keeps sum(m_prbAlloc) == totalPrbs with min=1 per slice
 // ---------------------------------------------------------------------------
 
 void
@@ -321,7 +321,7 @@ NrSliceGymEnv::EnforceConstraints()
 }
 
 // ---------------------------------------------------------------------------
-// BUG-02 FIX — ApplySliceWeights
+// ApplySliceWeights — pushes PRB-proportional weights to the AI scheduler
 // ---------------------------------------------------------------------------
 
 void
@@ -363,21 +363,20 @@ NrSliceGymEnv::ApplySliceWeights()
         const double ueCount =
             static_cast<double>(std::max<uint32_t>(1, m_uesPerSlice[slice]));
         const double weight = sliceFrac / ueCount;
-		// UeWeightsMap uses uint8_t keys — a 5G-LENA API constraint.
-		// Guard against silent wrap-around if RNTI ever exceeds 255.
-		// With 35 UEs this never triggers, but the failure would be
-		// undetectable without this check.
-		
-		if (rnti16 > 255)
-		        {
-		            NS_LOG_ERROR("ApplySliceWeights: RNTI " << rnti16
-		                         << " exceeds uint8_t range — skipping UE to prevent "
-		                         << "key collision in UeWeightsMap. This is a 5G-LENA "
-		                         << "API limitation (UeWeightsMap outer key is uint8_t).");
-		            continue;
-		        }
 
-		
+        // UeWeightsMap uses uint8_t keys — a 5G-LENA API constraint.
+        // Guard against silent wrap-around if RNTI ever exceeds 255.
+        // With 35 UEs this never triggers, but the failure would be
+        // undetectable without this check.
+        if (rnti16 > 255)
+        {
+            NS_LOG_ERROR("ApplySliceWeights: RNTI " << rnti16
+                         << " exceeds uint8_t range — skipping UE to prevent "
+                         << "key collision in UeWeightsMap. This is a 5G-LENA "
+                         << "API limitation (UeWeightsMap outer key is uint8_t).");
+            continue;
+        }
+
         weightsMap[static_cast<uint8_t>(rnti16)][lcId] = weight;
     }
 
@@ -386,6 +385,27 @@ NrSliceGymEnv::ApplySliceWeights()
         m_updateWeightsFn(weightsMap);
     }
 }
+
+// ---------------------------------------------------------------------------
+// AggregateHolDelay — fills m_holNorm[s] from MAC scheduler BSR observations.
+//
+// P1-3 VERIFICATION: The first 20 steps emit NS_LOG_INFO lines that print the
+// raw holDelay value (uint16_t from m_rlcTransmissionQueueHolDelay) alongside
+// the normalised result. To activate:
+//
+//   NS_LOG=NrSliceGymEnv=info ./run_simulation_copy2.sh dqn --episodes 1
+//
+// Expected values (unit assumed = milliseconds):
+//   URLLC active period: holDelay in range [1, 15] ms  → holNorm in [0.07, 1.0]
+//   URLLC silent period: no observations arrive         → sample-and-hold
+//   eMBB active period:  holDelay in range [1, 50] ms  → holNorm in [0.02, 1.0]
+//
+// If you observe values like holDelay=500 or holDelay=2000 for URLLC during
+// active periods, the unit is NOT milliseconds. In that case, investigate
+// m_rlcTransmissionQueueHolDelay in NrMacSchedulerLC to determine the actual
+// unit (subframes, slots, or microseconds) and add the appropriate conversion
+// factor before dividing by m_cfg.maxLatMs[s].
+// ---------------------------------------------------------------------------
 
 void
 NrSliceGymEnv::AggregateHolDelay()
@@ -424,6 +444,23 @@ NrSliceGymEnv::AggregateHolDelay()
 
         holSum[slice] += static_cast<double>(obs.holDelay);
         ++lcCount[slice];
+
+        // P1-3 unit verification: log raw holDelay values during the first
+        // 20 steps to confirm the field is in milliseconds.
+        // Activate with: NS_LOG=NrSliceGymEnv=info
+        // See the block comment above AggregateHolDelay() for expected ranges.
+        if (m_stepCount <= 20 && obs.holDelay > 0)
+        {
+            NS_LOG_INFO("[HOL_UNIT_CHECK]"
+                        " step="     << m_stepCount
+                        << " rnti="  << obs.rnti
+                        << " slice=" << static_cast<uint32_t>(slice)
+                        << " rawHolDelay=" << obs.holDelay
+                        << " maxLatMs="    << m_cfg.maxLatMs[slice]
+                        << " holNorm="
+                        << (static_cast<double>(obs.holDelay) /
+                            std::max(1e-9, m_cfg.maxLatMs[slice])));
+        }
     }
 
     for (uint8_t s = 0; s < kSliceCount; ++s)
@@ -439,10 +476,6 @@ NrSliceGymEnv::AggregateHolDelay()
         m_holNorm[s] = Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s]));
     }
 }
-	
-
-	
-
 
 // ---------------------------------------------------------------------------
 // Flow statistics aggregation
@@ -469,8 +502,6 @@ NrSliceGymEnv::AggregateFlowStats()
 {
     m_thrMbps.fill(0.0);
     m_latMs.fill(0.0);
-    // Note: m_queueOcc removed — observation channel [9:12] now uses
-    // m_holNorm (HOL-delay proxy) computed in AggregateHolDelay().
 
     if (!m_flowMonitor || !m_flowClassifier)
     {
@@ -505,10 +536,10 @@ NrSliceGymEnv::AggregateFlowStats()
             std::max(1e-9, m_cfg.stepInterval.GetSeconds());
 
         // --- Latency ---
-        const uint64_t prevPkts   = m_prevRxPackets.count(flowId)
-                                  ? m_prevRxPackets[flowId] : 0;
-        const double   prevDelay  = m_prevDelaySum.count(flowId)
-                                  ? m_prevDelaySum[flowId]  : 0.0;
+        const uint64_t prevPkts  = m_prevRxPackets.count(flowId)
+                                 ? m_prevRxPackets[flowId] : 0;
+        const double   prevDelay = m_prevDelaySum.count(flowId)
+                                 ? m_prevDelaySum[flowId]  : 0.0;
         const uint64_t deltaPkts  = (st.rxPackets >= prevPkts)
                                   ? (st.rxPackets - prevPkts) : 0;
         const double   deltaDelay = (st.delaySum.GetSeconds() >= prevDelay)
@@ -524,7 +555,6 @@ NrSliceGymEnv::AggregateFlowStats()
         }
     }
 
-    // Finalise per-slice latency as mean delay across all received packets.
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         if (totalDeltaPkts[s] > 0)
@@ -534,6 +564,7 @@ NrSliceGymEnv::AggregateFlowStats()
         }
     }
 }
+
 // ---------------------------------------------------------------------------
 // Scheduled step — observation + reward + notify
 // ---------------------------------------------------------------------------
@@ -550,15 +581,21 @@ NrSliceGymEnv::ScheduleStep()
     AggregateFlowStats();
     AggregateHolDelay();
 
-    // Build normalised observation vector
+    // Build normalised observation vector.
+    //
+    // obs[0:3]   prb_frac  — current PRB allocation as fraction of totalPrbs
+    // obs[3:6]   throughput — normalised by per-slice maxThrMbps
+    // obs[6:9]   latency    — normalised by 2×maxLatMs (SLA boundary at 0.5)
+    // obs[9:12]  hol_delay  — HOL delay normalised by maxLatMs (forward-looking)
+    // obs[12:15] ue_count   — simulated UEs as fraction of maxUes upper bounds
+    //                         P0-1 FIX: maxUes must exceed simulated counts so
+    //                         these are NOT always 1.0. See slice-rl-sim.cc.
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         m_observation[s]      = Clamp01(static_cast<double>(m_prbAlloc[s]) /
                                         m_cfg.totalPrbs);
         m_observation[3 + s]  = Clamp01(m_thrMbps[s] / m_cfg.maxThrMbps[s]);
         m_observation[6 + s]  = Clamp01(m_latMs[s] / (2.0 * m_cfg.maxLatMs[s]));
-        // obs[9:12] — HOL-delay congestion proxy, normalised by per-slice maxLatMs.
-        // Rises before packet drops occur, giving the agent a pre-emptive signal.
         m_observation[9 + s]  = m_holNorm[s];
         m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) /
                                          m_cfg.maxUes[s]);
@@ -567,83 +604,67 @@ NrSliceGymEnv::ScheduleStep()
     // -----------------------------------------------------------------------
     // Reward Function v2: throughput utility + continuous SLA margin +
     //            PRB-efficiency Jain - heavy penalty per SLA violation
-    //
-    // Key improvements over v1:
-    //   - Jain computed on (thrNorm/prbFrac) not raw Mbps: penalises
-    //     degenerate allocations like (1,1,23) even when SLA is met.
-    //   - Continuous SLA margin replaces binary satNorm: agent receives
-    //     gradient above AND below the SLA threshold, not just a cliff.
-    //   - All three positive terms normalised to [0,1]; max reward = 1.0/step.
     // -----------------------------------------------------------------------
-double thrNormAvg   = 0.0;
-double slaMarginAvg = 0.0;
-uint32_t slaViolations = 0;
-double esum  = 0.0;
-double esum2 = 0.0;
-uint32_t activeSlices = 0;
+    double   thrNormAvg    = 0.0;
+    double   slaMarginAvg  = 0.0;
+    uint32_t slaViolations = 0;
+    double   esum          = 0.0;
+    double   esum2         = 0.0;
+    uint32_t activeSlices  = 0;
 
-for (uint8_t s = 0; s < kSliceCount; ++s)
-{
-    const double thrNorm =
-        std::min(1.0, m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]));
-    const double prbFrac =
-        static_cast<double>(m_prbAlloc[s]) /
-        static_cast<double>(m_cfg.totalPrbs);
+    for (uint8_t s = 0; s < kSliceCount; ++s)
+    {
+        const double thrNorm =
+            std::min(1.0, m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]));
+        const double prbFrac =
+            static_cast<double>(m_prbAlloc[s]) /
+            static_cast<double>(m_cfg.totalPrbs);
 
-    const bool slaSat =
-        (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
-        (m_latMs[s]   <= m_cfg.maxLatMs[s]);
+        const bool slaSat =
+            (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
+            (m_latMs[s]   <= m_cfg.maxLatMs[s]);
 
-    const double thrMargin = std::max(-1.0, std::min(1.0,
-        (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
-        std::max(1e-9, m_cfg.minThrMbps[s])));
-    const double latMargin = std::max(-1.0, std::min(1.0,
-        (m_cfg.maxLatMs[s] - m_latMs[s]) /
-        std::max(1e-9, m_cfg.maxLatMs[s])));
+        const double thrMargin = std::max(-1.0, std::min(1.0,
+            (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
+            std::max(1e-9, m_cfg.minThrMbps[s])));
+        const double latMargin = std::max(-1.0, std::min(1.0,
+            (m_cfg.maxLatMs[s] - m_latMs[s]) /
+            std::max(1e-9, m_cfg.maxLatMs[s])));
 
-	// A slice is "inactive" when the traffic source is in an exponential
-	// off-period and genuinely not transmitting. In this case a zero-
-	// throughput reading is not a policy failure — it is the correct
-	// physical behavior of the OnOff traffic model. Penalising the agent
-	// for off-period steps would introduce uncontrollable noise into the
-	// reward signal and bias the policy to over-allocate PRBs to silent
-	// slices.
-	//
-	// Duty cycles: mMTC ~10% (on=1s, off=9s), URLLC ~20% (on=50ms, off=200ms).
-	// Both are frequently silent within a 100ms step window.
-	// eMBB ~67% (on=2s, off=1s) — rarely fully silent, no exclusion needed.
-	const bool mmtcInactive  = (s == MMTC  && m_thrMbps[s] < 0.001);
-	const bool urllcInactive = (s == URLLC && m_thrMbps[s] < 0.001);
-	const bool sliceInactive = mmtcInactive || urllcInactive;
+        // A slice is "inactive" when its traffic source is in an exponential
+        // off-period. Penalising the agent for off-period steps would introduce
+        // uncontrollable noise into the reward signal.
+        // Duty cycles: mMTC ~10% (on=1s, off=9s), URLLC ~20% (on=50ms, off=200ms).
+        const bool mmtcInactive  = (s == MMTC  && m_thrMbps[s] < 0.001);
+        const bool urllcInactive = (s == URLLC && m_thrMbps[s] < 0.001);
+        const bool sliceInactive = mmtcInactive || urllcInactive;
 
-	slaViolations += (slaSat || sliceInactive) ? 0 : 1;
+        slaViolations += (slaSat || sliceInactive) ? 0 : 1;
 
-	if (!sliceInactive)
-	{
-    	 thrNormAvg   += thrNorm;
-   		 slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
-   		 const double eff = thrNorm / std::max(1e-9, prbFrac);
-		 esum  += eff;
-   		 esum2 += eff * eff;
-   		 ++activeSlices;
-	}
-}
+        if (!sliceInactive)
+        {
+            thrNormAvg   += thrNorm;
+            slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
+            const double eff = thrNorm / std::max(1e-9, prbFrac);
+            esum  += eff;
+            esum2 += eff * eff;
+            ++activeSlices;
+        }
+    }
 
-	const uint32_t n = std::max(1u, activeSlices);
-	thrNormAvg   /= n;
-	slaMarginAvg /= n;
-	const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
-	const double effJain = (esum2 > 0.0)
-	    ? ((esum * esum) / (n * esum2))
-	    : 1.0;   // default fair when no active slices
-
-    
+    const uint32_t n = std::max(1u, activeSlices);
+    thrNormAvg   /= n;
+    slaMarginAvg /= n;
+    const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
+    const double effJain = (esum2 > 0.0)
+        ? ((esum * esum) / (n * esum2))
+        : 1.0;   // default fair when no active slices
 
     m_reward = static_cast<float>(
-     0.35 * thrNormAvg    +
-     0.30 * slaMarginNorm +
-     0.35 * effJain       -
-     2.0  * static_cast<double>(slaViolations));
+        0.35 * thrNormAvg    +
+        0.30 * slaMarginNorm +
+        0.35 * effJain       -
+        2.0  * static_cast<double>(slaViolations));
 
     m_gameOver = Simulator::Now() >= m_cfg.simTime;
     Notify();
