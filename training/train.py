@@ -4,6 +4,7 @@
 KEY ARCHITECTURE NOTE (ns3-gym protocol):
   env.reset() called ONCE before the episode loop.
   Episodes are delimited by max_steps steps, not by NS-3 socket resets.
+  The NS-3 simulation runs continuously across all episodes of a single launch.
 
 GPU support:
   Automatically uses CUDA if available. GTX 1650 supported.
@@ -11,7 +12,14 @@ GPU support:
 
 Resume support:
   --resume: loads latest dqn_ep*.pt checkpoint and continues from that episode.
-  Optimizer state, replay buffer size counter, and epsilon are all restored.
+  Optimizer state, replay buffer, and epsilon are all restored.
+
+SLA rate definition (must match C++ reward in slice-env.cc ScheduleStep):
+  A slice is counted as "satisfied" if:
+    (a) its observed throughput is >= min_thr AND latency observation < 0.5, OR
+    (b) it is inactive (mMTC or URLLC with thr < 0.001 Mbps — off-period).
+  Off-period exclusion mirrors the C++ inactive-slice logic exactly so that
+  the logged sla_rate metric reflects what the agent actually learned from.
 """
 
 from __future__ import annotations
@@ -52,32 +60,68 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 
 def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
+    """Compute the fraction of slices meeting their SLA this step.
+
+    This function is the Python-side measurement instrument for SLA compliance.
+    It MUST stay consistent with the C++ reward function in slice-env.cc
+    (ScheduleStep, the inactive-slice logic block) — otherwise the logged
+    sla_rate metric will disagree with the reward signal the agent learned from.
+
+    Inactive-slice rule (mirrors C++ exactly):
+      - mMTC  is inactive when observed throughput < 0.001 Mbps.
+        Duty cycle ~10% (on=1s, off=9s) — frequently silent.
+      - URLLC is inactive when observed throughput < 0.001 Mbps.
+        Duty cycle ~20% (on=50ms, off=200ms) — silent ~80% of steps.
+      Inactive slices are counted as satisfied (not as violations).
+
+    Latency boundary:
+      obs[6:9] is normalised by 2 × maxLatMs in C++, so the SLA boundary
+      sits at 0.5, not 1.0. The threshold here must remain < 0.5.
+    """
     max_thr = cfg["env"]["max_thr_mbps"]
     min_thr = cfg["env"]["min_thr_mbps"]
     sat = 0
     for s in SLICE_NAMES:
+        # Denormalise throughput back to Mbps for threshold comparison.
         thr = float(decoded_obs["throughput"][s]) * float(max_thr[s])
+        # Latency observation is already normalised — compare directly.
         lat_norm = float(decoded_obs["latency"][s])
-        mmtc_inactive = (s == "mMTC" and thr < 0.001)
-        if mmtc_inactive or (thr >= float(min_thr[s]) and lat_norm < 0.5):
+
+        # Off-period detection — mirrors C++ mmtcInactive / urllcInactive.
+        # Both mMTC and URLLC use OnOff exponential traffic models; during
+        # off-periods the traffic source is genuinely silent, not failing.
+        mmtc_inactive  = (s == "mMTC"  and thr < 0.001)
+        urllc_inactive = (s == "URLLC" and thr < 0.001)
+        slice_inactive = mmtc_inactive or urllc_inactive
+
+        if slice_inactive or (thr >= float(min_thr[s]) and lat_norm < 0.5):
             sat += 1
+
     return sat / len(SLICE_NAMES)
 
 
 def find_latest_checkpoint(model_dir: Path) -> Path | None:
+    """Return the most advanced DQN checkpoint by total_steps count.
+
+    Prefers dqn_final.pt if its total_steps is >= the latest numbered
+    checkpoint, otherwise falls back to the highest-numbered dqn_ep*.pt.
+    Returns None if no checkpoint exists at all.
+    """
     checkpoints = sorted(
         model_dir.glob("dqn_ep*.pt"),
         key=lambda p: int(p.stem.replace("dqn_ep", ""))
     )
     final = model_dir / "dqn_final.pt"
 
-    ckpt_ep = int(checkpoints[-1].stem.replace("dqn_ep", "")) if checkpoints else -1
-
     if final.exists():
         ckpt = torch.load(final, map_location="cpu")
         final_steps = ckpt.get("total_steps", -1)
-        ckpt_steps  = torch.load(checkpoints[-1], map_location="cpu").get("total_steps", -1) if checkpoints else -1
-        return final if final_steps >= ckpt_steps else checkpoints[-1]
+        if checkpoints:
+            ckpt_steps = torch.load(
+                checkpoints[-1], map_location="cpu"
+            ).get("total_steps", -1)
+            return final if final_steps >= ckpt_steps else checkpoints[-1]
+        return final
 
     return checkpoints[-1] if checkpoints else None
 
@@ -138,9 +182,9 @@ def main() -> None:
             agent.target_net.load_state_dict(ckpt["target"])
             agent.optim.load_state_dict(ckpt["optim"])
             agent.total_steps = ckpt.get("total_steps", 0)
-            agent.load_buffer(ckpt_path)
+            agent.load_buffer(ckpt_path)  # loads .buf sidecar if present
             if "dqn_ep" in ckpt_path.stem:
-                ckpt_ep = int(ckpt_path.stem.replace("dqn_ep", "")) + 1
+                ckpt_ep  = int(ckpt_path.stem.replace("dqn_ep", "")) + 1
                 log_path = PROJECT_ROOT / "results" / "logs" / "dqn_log.jsonl"
                 if log_path.exists():
                     with log_path.open() as f:
@@ -149,11 +193,12 @@ def main() -> None:
                             line = line.strip()
                             if line:
                                 last = line
-                    log_ep = (json.loads(last)["episode"] + 1) if last else ckpt_ep
+                    log_ep   = (json.loads(last)["episode"] + 1) if last else ckpt_ep
                     start_ep = max(ckpt_ep, log_ep)
                 else:
                     start_ep = ckpt_ep
             else:
+                # Resuming from dqn_final.pt — derive start_ep from log
                 log_path = PROJECT_ROOT / "results" / "logs" / "dqn_log.jsonl"
                 if log_path.exists():
                     with log_path.open() as f:
@@ -226,8 +271,10 @@ def main() -> None:
                     decoded = {"throughput": {s: 0.0 for s in SLICE_NAMES},
                                "latency":    {s: 0.0 for s in SLICE_NAMES}}
 
+                # Denormalise latency: obs[7] = actual_lat / (2 × maxLatMs),
+                # so actual_lat = obs[7] × 2 × maxLatMs.
                 embb_thr  = float(decoded["throughput"].get("eMBB",  0.0)) * float(cfg["env"]["max_thr_mbps"]["eMBB"])
-                urllc_lat = float(decoded["latency"].get("URLLC", 0.0)) * 2.0 * float(cfg["env"]["max_lat_ms"]["URLLC"])
+                urllc_lat = float(decoded["latency"].get("URLLC",    0.0)) * 2.0 * float(cfg["env"]["max_lat_ms"]["URLLC"])
                 sla_rate  = compute_sla_rate(decoded, cfg)
 
                 mean_loss = float(np.mean(ep_losses)) if ep_losses else 0.0
@@ -245,7 +292,7 @@ def main() -> None:
                     mean_loss   = mean_loss,
                 )
 
-                # JSONL log
+                # ── JSONL log — one record per episode ────────────────────
                 rec = {
                     "episode":     ep,
                     "reward":      round(ep_reward,        6),
