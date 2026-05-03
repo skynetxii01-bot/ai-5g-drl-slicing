@@ -1,4 +1,17 @@
-"""Gym 0.26.2 wrapper for the NS-3 5G slice RL environment."""
+"""Gym 0.26.2 wrapper for the NS-3 5G slice RL environment.
+
+Observation layout (15 floats, all normalised to [0, 1]):
+    [0:3]   prb_frac   — fraction of totalPrbs allocated to each slice
+    [3:6]   throughput — normalised by per-slice maxThrMbps
+    [6:9]   latency    — normalised by 2 × per-slice maxLatMs
+                         (reads 0.5 at the SLA boundary, not 1.0)
+    [9:12]  hol_delay  — mean Head-of-Line delay per slice,
+                         normalised by per-slice maxLatMs.
+                         Forward-looking congestion proxy: rises before
+                         packets are dropped. Sample-and-hold when no
+                         fresh scheduler callback fires in the 100ms window.
+    [12:15] ue_count   — fraction of maxUes active per slice
+"""
 
 from __future__ import annotations
 
@@ -7,7 +20,22 @@ from typing import Any, Dict, Optional, Tuple
 import gym
 import numpy as np
 from gym import spaces
-from ns3gym import ns3env
+
+# ns3gym is installed inside the project venv only.
+# The guarded import below:
+#   (a) silences IDE warnings from static analysers that don't know the venv
+#   (b) produces a clear, actionable error if someone runs this outside the venv
+# At runtime inside the venv this import always succeeds — it is not a real guard.
+try:
+    from ns3gym import ns3env
+except ImportError as e:
+    raise ImportError(
+        "ns3gym is not installed in the active Python environment.\n"
+        "Activate the project venv first:\n"
+        "  source ~/5g-project/ns-allinone-3.45/.venv/bin/activate\n"
+        f"Original error: {e}"
+    ) from e
+
 
 SLICE_NAMES = ("eMBB", "URLLC", "mMTC")
 OBS_SIZE = 15
@@ -43,6 +71,10 @@ class SliceGymEnv(gym.Env):
         )
         self.action_space = spaces.Discrete(ACTION_SIZE)
 
+        # Ns3Env is the ZMQ bridge object. It binds to GYM_PORT and waits
+        # for the NS-3 process (which acts as the ZMQ client) to connect.
+        # startSim=False means we never launch NS-3 from Python —
+        # run_simulation_copy2.sh handles that separately.
         self._ns3_env = ns3env.Ns3Env(
             port=self.port,
             simSeed=self.sim_seed,
@@ -60,13 +92,20 @@ class SliceGymEnv(gym.Env):
         return arr
 
     def _decode_obs(self, obs: np.ndarray) -> Dict[str, Dict[str, float]]:
+        """Break the flat 15-float observation into a labelled dictionary.
+
+        IMPORTANT: the third channel (obs[9:12]) is labelled 'hol_delay'.
+        It was renamed from 'queue_occ' in session 2026-05-03 to match the
+        C++ implementation in slice-env.cc (AggregateHolDelay).
+        Do NOT revert this key name.
+        """
         arr = self._validate_obs(obs)
         return {
-            "prb_frac": dict(zip(SLICE_NAMES, arr[0:3].tolist())),
+            "prb_frac":   dict(zip(SLICE_NAMES, arr[0:3].tolist())),
             "throughput": dict(zip(SLICE_NAMES, arr[3:6].tolist())),
-            "latency": dict(zip(SLICE_NAMES, arr[6:9].tolist())),
-            "queue_occ": dict(zip(SLICE_NAMES, arr[9:12].tolist())),
-            "ue_count": dict(zip(SLICE_NAMES, arr[12:15].tolist())),
+            "latency":    dict(zip(SLICE_NAMES, arr[6:9].tolist())),
+            "hol_delay":  dict(zip(SLICE_NAMES, arr[9:12].tolist())),  # was queue_occ — FINAL
+            "ue_count":   dict(zip(SLICE_NAMES, arr[12:15].tolist())),
         }
 
     def reset(
