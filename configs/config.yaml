@@ -2,7 +2,7 @@ env:
   max_thr_mbps:
     eMBB: 100.0
     URLLC: 10.0 # was 15.0
-    mMTC: 2.0
+    mMTC: 8.0 # was 2.0
   min_thr_mbps:
     eMBB: 10.0
     URLLC: 1.0
