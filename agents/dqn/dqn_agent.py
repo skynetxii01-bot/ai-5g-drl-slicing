@@ -20,15 +20,15 @@ from agents.dqn.replay_buffer import ReplayBuffer
 class DqnConfig:
     obs_dim: int = 15
     action_dim: int = 27
-    lr: float = 1e-3
+    lr: float = 1e-4
     gamma: float = 0.99
     batch_size: int = 64
     buffer_size: int = 50_000
-    tau: float = 0.005
+    tau: float = 0.001
     eps_start: float = 1.0
     eps_end: float = 0.01
-    eps_decay_steps: int = 20_000
-    grad_clip: float = 10.0
+    eps_decay_steps: int = 50_000
+    grad_clip: float = 1.0
 
 
 class DqnAgent:
