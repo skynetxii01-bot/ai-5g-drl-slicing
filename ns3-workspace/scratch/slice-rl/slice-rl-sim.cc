@@ -265,32 +265,32 @@ main(int argc, char* argv[])
     cfg.simTime      = Seconds(simTimeSeconds);
     cfg.initialPrbAlloc = {10, 8, 7};
 
-    // -----------------------------------------------------------------------
     // P0-1 FIX: maxUes must be UPPER BOUNDS that EXCEED the simulated counts.
-    //
-    // Previously this was set to {embbUes, urllcUes, mmtcUes} = {10, 5, 20},
-    // which made obs[12:15] = {10/10, 5/5, 20/20} = {1.0, 1.0, 1.0} always.
-    // Three constant-1.0 input dimensions provided zero information gradient
-    // to the neural network — the observation space was effectively 12-dim,
-    // not 15-dim as claimed.
-    //
-    // With upper bounds {20, 10, 50}:
-    //   obs[12] = 10/20 = 0.50  (eMBB at 50% of max supported density)
-    //   obs[13] =  5/10 = 0.50  (URLLC at 50% of max supported density)
-    //   obs[14] = 20/50 = 0.40  (mMTC at 40% of max supported density)
-    //
-    // These are constant within a single episode (UE count doesn't change),
-    // but they are no longer degenerate. Their gradients are non-zero, and
-    // they carry physically meaningful information about network loading
-    // relative to the system's theoretical capacity.
-    //
-    // Upper bounds chosen as 2× the simulated counts for eMBB and URLLC,
-    // and 2.5× for mMTC, which is consistent with realistic deployment
-    // scenarios documented in 3GPP TR 38.913 for dense urban deployments.
-    // -----------------------------------------------------------------------
+    // See slice-env.h Config for full rationale.
     cfg.maxUes       = {20, 10, 50};   // FIX: was {embbUes, urllcUes, mmtcUes} = {10, 5, 20}
 
-    cfg.maxThrMbps   = {100.0, 10.0, 2.0};
+    // -----------------------------------------------------------------------
+    // P0-A FIX: mMTC maxThrMbps raised from 2.0 → 8.0 Mbps.
+    //
+    // Root cause: with 20 mMTC UEs at 2 Mbps peak and 10% duty cycle, the
+    // expected simultaneous active UEs ≈ 2, yielding expected aggregate
+    // throughput ≈ 4 Mbps.  The old cap of 2.0 Mbps (= one UE peak) caused
+    // Clamp01(thr / maxThr) to saturate at 1.0 for ~86% of active-period
+    // steps, making obs[5] a near-binary on/off signal rather than a
+    // continuous gradient.
+    //
+    // New value: 8.0 Mbps = 2 × expected aggregate.
+    //   - Off-period (thr ≈ 0):         obs[5] ≈ 0.0
+    //   - Single active UE (thr ≈ 2):   obs[5] ≈ 0.25
+    //   - Expected load  (thr ≈ 4):     obs[5] ≈ 0.50
+    //   - Double load    (thr ≈ 8):     obs[5] = 1.0  (saturation at 2× expected)
+    //
+    // This matches the treatment of eMBB (maxThr=100 >> expected≈66) and
+    // URLLC (maxThr=10 >> expected≈5), where maxThr is set well above the
+    // expected aggregate to avoid saturation.
+    // -----------------------------------------------------------------------
+    cfg.maxThrMbps   = {100.0, 10.0, 8.0};   // FIX: was {100.0, 10.0, 2.0}
+
     cfg.maxLatMs     = {50.0,  15.0, 500.0};
     cfg.minThrMbps   = {10.0,  1.0,  0.1};
 
