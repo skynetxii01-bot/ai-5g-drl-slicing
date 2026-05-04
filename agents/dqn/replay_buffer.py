@@ -1,10 +1,13 @@
-"""Uniform replay buffer for DQN."""
+"""Uniform replay buffer for DQN.
+
+Array/list-backed ring buffer with O(1) random indexing.
+"""
 
 from __future__ import annotations
 
-from collections import deque
+
 from dataclasses import dataclass
-from typing import Deque, Tuple
+from typing import List , Tuple
 
 import numpy as np
 import torch
@@ -22,7 +25,8 @@ class Transition:
 class ReplayBuffer:
     def __init__(self, capacity: int = 50_000) -> None:
         self.capacity = int(capacity)
-        self.buffer: Deque[Transition] = deque(maxlen=self.capacity)
+        self .buffer: List [Transition] = []
+        self.pos = 0
 
     def __len__(self) -> int:
         return len(self.buffer)
@@ -35,21 +39,30 @@ class ReplayBuffer:
         next_obs: np.ndarray,
         done: bool,
     ) -> None:
-        self.buffer.append(
-            Transition(
-                obs=np.asarray(obs, dtype=np.float32),
-                action=int(action),
-                reward=float(reward),
-                next_obs=np.asarray(next_obs, dtype=np.float32),
-                done=bool(done),
-            )
+        
+        t = Transition(
+            obs=np.asarray(obs, dtype=np.float32),
+            action = int (action),
+            reward = float (reward),
+            next_obs=np.asarray(next_obs, dtype=np.float32),
+            done = bool (done),
         )
+        if len ( self .buffer) < self .capacity:
+ 
+            self .buffer.append(t)
+        else :
+            self.buffer [ self.pos ] = t
+        self .pos = ( self .pos + 1 ) % self .capacity
 
     def sample(
         self,
         batch_size: int,
         device: torch.device,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if batch_size > len(self.buffer):
+            raise ValueError(
+                f"batch_size ({batch_size}) cannot exceed buffer size ({len(self.buffer)})"
+            )
         idx = np.random.choice(len(self.buffer), size=batch_size, replace=False)
         batch = [self.buffer[i] for i in idx]
 
