@@ -191,6 +191,26 @@ NrSliceGymEnv::OnSchedulerNotify(
     m_updateWeightsFn    = updateWeightsFn;
 
     TryBuildRntiSliceMap();
+        if (m_rntiMapReady)
+    {
+        for ( const auto & obs : observations)
+ 
+        {
+            auto it = m_rntiToSlice. find (obs.rnti);
+            if (it == m_rntiToSlice.end ())
+            {
+                continue ;
+            }
+            const uint8_t slice = it->second;
+ 
+            if (slice >= kSliceCount)
+            {
+                continue ;
+            }
+            m_holSumMs[slice] += static_cast < double >(obs.holDelay);
+            ++m_holSamples[slice];
+        }
+    }
     ApplySliceWeights();
 }
 
@@ -410,70 +430,33 @@ NrSliceGymEnv::ApplySliceWeights()
 void
 NrSliceGymEnv::AggregateHolDelay()
 {
-    // Ensure RNTI map is ready before iterating observations.
+     // Ensure RNTI map is ready before consuming accumulated observations.
     TryBuildRntiSliceMap();
 
     // If no fresh scheduler observations arrived this step, preserve the
     // previous m_holNorm values (sample-and-hold). Resetting to zero would
     // confuse the agent — zero means "no congestion," but the real meaning
     // here is "no new data." The two cases must be distinguishable.
-    if (m_lastLcObservations.empty() || !m_rntiMapReady)
+     if (!m_rntiMapReady)
     {
         return;   // keep previous m_holNorm — do NOT fill(0.0)
     }
 
-    // Only zero-fill when we have fresh data to replace it with.
-    m_holNorm.fill(0.0);
 
-    std::array<uint32_t, kSliceCount> lcCount{0, 0, 0};
-    std::array<double,   kSliceCount> holSum {0.0, 0.0, 0.0};
-
-    for (const auto& obs : m_lastLcObservations)
-    {
-        auto it = m_rntiToSlice.find(obs.rnti);
-        if (it == m_rntiToSlice.end())
-        {
-            continue;
-        }
-
-        const uint8_t slice = it->second;
-        if (slice >= kSliceCount)
-        {
-            continue;
-        }
-
-        holSum[slice] += static_cast<double>(obs.holDelay);
-        ++lcCount[slice];
-
-        // P1-3 unit verification: log raw holDelay values during the first
-        // 20 steps to confirm the field is in milliseconds.
-        // Activate with: NS_LOG=NrSliceGymEnv=info
-        // See the block comment above AggregateHolDelay() for expected ranges.
-        if (m_stepCount <= 20 && obs.holDelay > 0)
-        {
-            NS_LOG_INFO("[HOL_UNIT_CHECK]"
-                        " step="     << m_stepCount
-                        << " rnti="  << obs.rnti
-                        << " slice=" << static_cast<uint32_t>(slice)
-                        << " rawHolDelay=" << obs.holDelay
-                        << " maxLatMs="    << m_cfg.maxLatMs[slice]
-                        << " holNorm="
-                        << (static_cast<double>(obs.holDelay) /
-                            std::max(1e-9, m_cfg.maxLatMs[slice])));
-        }
-    }
 
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
-        if (lcCount[s] == 0)
+         if ( m_holSamples [s] == 0 )
         {
             // No UEs from this slice had observations this callback —
             // keep previous value rather than zeroing.
             continue;
         }
 
-        const double meanHolMs = holSum[s] / static_cast<double>(lcCount[s]);
+        const double meanHolMs = m_holSumMs[s] / static_cast < double >(m_holSamples [s]);
         m_holNorm[s] = Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s]));
+        m_holSumMs[s] = 0.0 ;
+        m_holSamples[s] = 0 ;
     }
 }
 
