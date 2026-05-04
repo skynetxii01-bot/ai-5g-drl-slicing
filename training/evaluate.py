@@ -254,6 +254,7 @@ def evaluate_policy(
         sla_sum      = 0.0
         embb_sum     = 0.0
         urllc_lat_sum = 0.0
+        urllc_lat_n = 0
         prb_embb_sum  = 0.0
         prb_urllc_sum = 0.0
         prb_mmtc_sum  = 0.0
@@ -271,8 +272,12 @@ def evaluate_policy(
             sla_sum       += compute_sla_rate(decoded, cfg)
             embb_sum      += float(decoded.get("throughput", {}).get("eMBB",  0.0)) \
                              * float(cfg["env"]["max_thr_mbps"]["eMBB"])
-            urllc_lat_sum += float(decoded.get("latency",    {}).get("URLLC", 0.0)) \
-                             * 2.0 * float(cfg["env"]["max_lat_ms"]["URLLC"])
+            urllc_thr_mbps = float (decoded.get( "throughput" , {}).get( "URLLC" , 0.0 )) \
+                             * float (cfg[ "env" ][ "max_thr_mbps" ][ "URLLC" ])
+            if urllc_thr_mbps >= 0.001 :
+                urllc_lat_sum += float (decoded.get( "latency" , {}).get( "URLLC" , 0.0 )) \
+                                 * 2.0 * float (cfg[ "env" ][ "max_lat_ms" ][ "URLLC" ])
+                urllc_lat_n += 1
             prb_frac       = decoded.get("prb_frac", {})
             prb_embb_sum  += prb_frac.get("eMBB",  0.4)  * 25
             prb_urllc_sum += prb_frac.get("URLLC", 0.32) * 25
@@ -285,7 +290,7 @@ def evaluate_policy(
         ep_rewards.append(ep_reward)
         ep_sla_rates.append(sla_sum       / n)
         ep_embb_thrs.append(embb_sum      / n)
-        ep_urllc_lats.append(urllc_lat_sum / n)
+        ep_urllc_lats.append(urllc_lat_sum / max ( 1 , urllc_lat_n))
         ep_prb_embb.append(prb_embb_sum   / n)
         ep_prb_urllc.append(prb_urllc_sum / n)
         ep_prb_mmtc.append(prb_mmtc_sum   / n)
@@ -294,7 +299,7 @@ def evaluate_policy(
               f"reward={ep_reward:>8.3f}  "
               f"sla={sla_sum/n:.2f}  "
               f"eMBB={embb_sum/n:.1f}Mbps  "
-              f"URLLC_lat={urllc_lat_sum/n:.2f}ms")
+              f"URLLC_lat={urllc_lat_sum/max ( 1 , urllc_lat_n):.2f}ms")
 
     results = {
         "mean_reward":       float(np.mean(ep_rewards)),
