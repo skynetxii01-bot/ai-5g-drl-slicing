@@ -11,6 +11,7 @@ Observation layout (15 floats, all normalised to [0, 1]):
                          packets are dropped. Sample-and-hold when no
                          fresh scheduler callback fires in the 100ms window.
     [12:15] ue_count   — fraction of maxUes active per slice
+    [12:15] load_pressure — throughput / minThrMbps per slice (clipped)
 """
 
 from __future__ import annotations
@@ -105,7 +106,7 @@ class SliceGymEnv(gym.Env):
             "throughput": dict(zip(SLICE_NAMES, arr[3:6].tolist())),
             "latency":    dict(zip(SLICE_NAMES, arr[6:9].tolist())),
             "hol_delay":  dict(zip(SLICE_NAMES, arr[9:12].tolist())),  # was queue_occ — FINAL
-            "ue_count":   dict(zip(SLICE_NAMES, arr[12:15].tolist())),
+            "load_pressure" :  dict ( zip (SLICE_NAMES, arr[ 12 : 15 ].tolist())),
         }
 
     def reset(
