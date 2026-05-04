@@ -570,9 +570,10 @@ NrSliceGymEnv::ScheduleStep()
     // obs[3:6]   throughput — normalised by per-slice maxThrMbps
     // obs[6:9]   latency    — normalised by 2×maxLatMs (SLA boundary at 0.5)
     // obs[9:12]  hol_delay  — HOL delay normalised by maxLatMs (forward-looking)
-    // obs[12:15] ue_count   — simulated UEs as fraction of maxUes upper bounds
-    //                         P0-1 FIX: maxUes must exceed simulated counts so
-    //                         these are NOT always 1.0. See slice-rl-sim.cc.
+    // obs[12:15] load_pressure — throughput relative to SLA minimum throughput
+    //                            (thr/minThr, clipped to [0,1]). This replaces
+    //                            static UE-count features that were constant
+    //                            during each run and provided no learning signal.
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         m_observation[s]      = Clamp01(static_cast<double>(m_prbAlloc[s]) /
@@ -580,8 +581,8 @@ NrSliceGymEnv::ScheduleStep()
         m_observation[3 + s]  = Clamp01(m_thrMbps[s] / m_cfg.maxThrMbps[s]);
         m_observation[6 + s]  = Clamp01(m_latMs[s] / (2.0 * m_cfg.maxLatMs[s]));
         m_observation[9 + s]  = m_holNorm[s];
-        m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) /
-                                         m_cfg.maxUes[s]);
+        m_observation[12 + s] = Clamp01(m_thrMbps[s] / std::max(1e-9, m_cfg.minThrMbps[s]));
+        // used to be "m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) / m_cfg.maxUes[s]);"
     }
 
     // -----------------------------------------------------------------------
