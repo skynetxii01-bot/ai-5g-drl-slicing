@@ -251,6 +251,7 @@ def main() -> None:
                 ep_urllc_thr_sum = 0.0
                 ep_mmtc_sum      = 0.0
                 ep_urllc_lat_sum = 0.0
+                ep_urllc_lat_n = 0
                 # ─────────────────────────────────────────────────────────────
 
                 for _ in range(max_steps):
@@ -280,9 +281,13 @@ def main() -> None:
                                              * float(cfg["env"]["max_thr_mbps"]["URLLC"]))
                         ep_mmtc_sum      += (float(decoded["throughput"].get("mMTC",  0.0))
                                              * float(cfg["env"]["max_thr_mbps"]["mMTC"]))
-                        ep_urllc_lat_sum += (float(decoded["latency"].get("URLLC", 0.0))
-                                             * 2.0
-                                             * float(cfg["env"]["max_lat_ms"]["URLLC"]))
+                        urllc_thr_mbps = (float(decoded["throughput"].get("URLLC", 0.0))
+                                          * float(cfg["env"]["max_thr_mbps"]["URLLC"]))
+                        if urllc_thr_mbps >= 0.001:
+                            ep_urllc_lat_sum += (float(decoded["latency"].get("URLLC", 0.0))
+                                                 * 2.0
+                                                 * float(cfg["env"]["max_lat_ms"]["URLLC"]))
+                            ep_urllc_lat_n += 1
 
                     mean_loss_so_far = float(np.mean(ep_losses)) if ep_losses else 0.0
                     mon.step(
@@ -305,7 +310,7 @@ def main() -> None:
                 embb_thr  = ep_embb_sum      / n
                 urllc_thr = ep_urllc_thr_sum / n
                 mmtc_thr  = ep_mmtc_sum      / n
-                urllc_lat = ep_urllc_lat_sum  / n
+                urllc_lat = ep_urllc_lat_sum  / max(1, ep_urllc_lat_n)
                 # ─────────────────────────────────────────────────────────────
 
                 # PRB allocation: last-step snapshot is correct here.
