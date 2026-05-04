@@ -47,6 +47,14 @@ class NrSliceGymEnv : public OpenGymEnv
     //   urllcUes=5  → maxUes[URLLC]=10  → obs[13]=0.50
     //   mmtcUes=20  → maxUes[MMTC]=50   → obs[14]=0.40
     //
+    // maxThrMbps rationale (P0-A fix):
+    //   mMTC: 20 UEs × 2 Mbps peak × 10% duty = 4 Mbps expected aggregate.
+    //   Old value of 2.0 Mbps caused Clamp01(thr/max) to saturate at 1.0 for
+    //   ~86% of active-period steps, producing a near-binary obs[5].
+    //   New value of 8.0 Mbps = 2 × expected aggregate, keeping obs[5] in
+    //   (0, 1) with gradient throughout the realistic operating range.
+    //   eMBB and URLLC are unaffected (their maxThr already exceed peak demand).
+    //
     // Note on UeWeightsMap RNTI constraint:
     //   The 5G-LENA AI scheduler API uses uint8_t as the RNTI key in
     //   UeWeightsMap, limiting the AI weight map to 255 UEs per gNB.
@@ -66,7 +74,13 @@ class NrSliceGymEnv : public OpenGymEnv
         // Was incorrectly {10, 5, 20} (equal to simulated counts → obs always 1.0).
         std::array<uint32_t, kSliceCount> maxUes{20, 10, 50};
 
-        std::array<double, kSliceCount> maxThrMbps{100.0, 10.0, 2.0};
+        // P0-A FIX: mMTC raised from 2.0 → 8.0 Mbps.
+        // 2.0 Mbps == single UE peak rate, which is below expected aggregate
+        // (≈4 Mbps), causing obs[5] to saturate at 1.0 during ~86% of
+        // active-period steps. 8.0 Mbps = 2 × expected aggregate maintains
+        // obs[5] in (0, 1) across the realistic operating range.
+        std::array<double, kSliceCount> maxThrMbps{100.0, 10.0, 8.0};
+
         std::array<double, kSliceCount> maxLatMs{50.0, 15.0, 500.0};
         std::array<double, kSliceCount> minThrMbps{10.0, 1.0, 0.1};
     };
