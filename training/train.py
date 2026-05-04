@@ -93,7 +93,7 @@ def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
         urllc_inactive = (s == "URLLC" and thr < 0.001)
         slice_inactive = mmtc_inactive or urllc_inactive
 
-        if slice_inactive or (thr >= float(min_thr[s]) and lat_norm < 0.5):
+        if slice_inactive or (thr >= float(min_thr[s]) and lat_norm <= 0.5):
             sat += 1
 
     return sat / len(SLICE_NAMES)
