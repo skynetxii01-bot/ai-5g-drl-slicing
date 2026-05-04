@@ -225,8 +225,7 @@ def main() -> None:
 
     # P0-1 verification: after the maxUes fix, obs[12:15] should read
     # approximately 0.500, 0.500, 0.400 — not 1.0, 1.0, 1.0.
-    print(f"[train.py] obs[12:15] = {obs[12]:.3f}, {obs[13]:.3f}, {obs[14]:.3f}  "
-          f"(expected ~0.500, 0.500, 0.400 — confirms P0-1 fix is live)")
+    print(f"[train.py] obs[12:15] load_pressure = {obs[12]:.3f}, {obs[13]:.3f}, {obs[14]:.3f}")
 
     decoded = info.get("decoded_obs", None)
 
