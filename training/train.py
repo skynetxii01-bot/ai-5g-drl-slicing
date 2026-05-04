@@ -16,10 +16,17 @@ Resume support:
 
 SLA rate definition (must match C++ reward in slice-env.cc ScheduleStep):
   A slice is counted as "satisfied" if:
-    (a) its observed throughput is >= min_thr AND latency observation < 0.5, OR
+    (a) its observed throughput >= min_thr AND latency observation < 0.5, OR
     (b) it is inactive (mMTC or URLLC with thr < 0.001 Mbps — off-period).
-  Off-period exclusion mirrors the C++ inactive-slice logic exactly so that
-  the logged sla_rate metric reflects what the agent actually learned from.
+  Off-period exclusion mirrors the C++ inactive-slice logic exactly.
+
+Metric logging (P0-2 fix — episode averages):
+  embb_thr, urllc_thr, mmtc_thr, urllc_lat, and sla_rate are episode averages
+  computed by accumulating step-level values inside the loop and dividing by
+  step_count. This makes logged training metrics directly comparable to the
+  episode-average metrics produced by evaluate.py. Previously these were
+  last-step snapshots, which were noisy and scientifically incomparable to
+  evaluation results.
 """
 
 from __future__ import annotations
@@ -60,36 +67,28 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 
 def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
-    """Compute the fraction of slices meeting their SLA this step.
+    """Compute the fraction of slices meeting their SLA at a single step.
 
     This function is the Python-side measurement instrument for SLA compliance.
-    It MUST stay consistent with the C++ reward function in slice-env.cc
-    (ScheduleStep, the inactive-slice logic block) — otherwise the logged
-    sla_rate metric will disagree with the reward signal the agent learned from.
+    It MUST remain consistent with the C++ reward function in slice-env.cc.
+    Call it once per step and average the results for episode-level logging.
 
     Inactive-slice rule (mirrors C++ exactly):
-      - mMTC  is inactive when observed throughput < 0.001 Mbps.
-        Duty cycle ~10% (on=1s, off=9s) — frequently silent.
-      - URLLC is inactive when observed throughput < 0.001 Mbps.
-        Duty cycle ~20% (on=50ms, off=200ms) — silent ~80% of steps.
-      Inactive slices are counted as satisfied (not as violations).
+      mMTC and URLLC are treated as satisfied when thr < 0.001 Mbps because
+      their OnOff traffic models generate genuine silent off-periods that are
+      not scheduling failures.
 
     Latency boundary:
-      obs[6:9] is normalised by 2 × maxLatMs in C++, so the SLA boundary
-      sits at 0.5, not 1.0. The threshold here must remain < 0.5.
+      obs[6:9] is normalised by 2 * maxLatMs in C++, so the SLA boundary
+      sits at lat_norm = 0.5, not 1.0.
     """
     max_thr = cfg["env"]["max_thr_mbps"]
     min_thr = cfg["env"]["min_thr_mbps"]
     sat = 0
     for s in SLICE_NAMES:
-        # Denormalise throughput back to Mbps for threshold comparison.
-        thr = float(decoded_obs["throughput"][s]) * float(max_thr[s])
-        # Latency observation is already normalised — compare directly.
+        thr      = float(decoded_obs["throughput"][s]) * float(max_thr[s])
         lat_norm = float(decoded_obs["latency"][s])
 
-        # Off-period detection — mirrors C++ mmtcInactive / urllcInactive.
-        # Both mMTC and URLLC use OnOff exponential traffic models; during
-        # off-periods the traffic source is genuinely silent, not failing.
         mmtc_inactive  = (s == "mMTC"  and thr < 0.001)
         urllc_inactive = (s == "URLLC" and thr < 0.001)
         slice_inactive = mmtc_inactive or urllc_inactive
@@ -101,12 +100,7 @@ def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
 
 
 def find_latest_checkpoint(model_dir: Path) -> Path | None:
-    """Return the most advanced DQN checkpoint by total_steps count.
-
-    Prefers dqn_final.pt if its total_steps is >= the latest numbered
-    checkpoint, otherwise falls back to the highest-numbered dqn_ep*.pt.
-    Returns None if no checkpoint exists at all.
-    """
+    """Return the most advanced DQN checkpoint by total_steps count."""
     checkpoints = sorted(
         model_dir.glob("dqn_ep*.pt"),
         key=lambda p: int(p.stem.replace("dqn_ep", ""))
@@ -152,6 +146,9 @@ def main() -> None:
 
     env = SliceGymEnv(port=args.port, sim_seed=args.seed, start_sim=False)
 
+    # All hyperparameters read explicitly from config.yaml.
+    # The DqnConfig dataclass defaults were historically out of sync with
+    # config.yaml — this explicit construction is the authoritative source.
     dqn_cfg = DqnConfig(
         obs_dim         = 15,
         action_dim      = 27,
@@ -182,7 +179,7 @@ def main() -> None:
             agent.target_net.load_state_dict(ckpt["target"])
             agent.optim.load_state_dict(ckpt["optim"])
             agent.total_steps = ckpt.get("total_steps", 0)
-            agent.load_buffer(ckpt_path)  # loads .buf sidecar if present
+            agent.load_buffer(ckpt_path)
             if "dqn_ep" in ckpt_path.stem:
                 ckpt_ep  = int(ckpt_path.stem.replace("dqn_ep", "")) + 1
                 log_path = PROJECT_ROOT / "results" / "logs" / "dqn_log.jsonl"
@@ -198,7 +195,6 @@ def main() -> None:
                 else:
                     start_ep = ckpt_ep
             else:
-                # Resuming from dqn_final.pt — derive start_ep from log
                 log_path = PROJECT_ROOT / "results" / "logs" / "dqn_log.jsonl"
                 if log_path.exists():
                     with log_path.open() as f:
@@ -226,6 +222,12 @@ def main() -> None:
     print(f"[train.py] Connecting to NS-3 on port {args.port}...")
     obs, info = env.reset()
     print("[train.py] Connected. Starting training.")
+
+    # P0-1 verification: after the maxUes fix, obs[12:15] should read
+    # approximately 0.500, 0.500, 0.400 — not 1.0, 1.0, 1.0.
+    print(f"[train.py] obs[12:15] = {obs[12]:.3f}, {obs[13]:.3f}, {obs[14]:.3f}  "
+          f"(expected ~0.500, 0.500, 0.400 — confirms P0-1 fix is live)")
+
     decoded = info.get("decoded_obs", None)
 
     with TrainingMonitor("dqn", start_ep + args.episodes - 1, max_steps,
@@ -238,6 +240,19 @@ def main() -> None:
                 step_bar   = mon.begin_episode(ep)
 
                 ep_losses: list[float] = []
+
+                # ── P0-2 accumulators — one value per step, averaged at end ──
+                # The key insight: ep_reward was already accumulated correctly
+                # by summing reward each step. We extend the same pattern to
+                # the three logged performance metrics so they become episode
+                # averages rather than last-step snapshots.
+                ep_sla_sum       = 0.0
+                ep_embb_sum      = 0.0
+                ep_urllc_thr_sum = 0.0
+                ep_mmtc_sum      = 0.0
+                ep_urllc_lat_sum = 0.0
+                # ─────────────────────────────────────────────────────────────
+
                 for _ in range(max_steps):
                     action = agent.act(obs, explore=True)
                     next_obs, reward, done, truncated, info = env.step(action)
@@ -252,6 +267,23 @@ def main() -> None:
                     step_count += 1
                     obs         = next_obs
                     decoded     = info.get("decoded_obs", decoded)
+
+                    # Accumulate per-step metrics in physical units (Mbps, ms).
+                    # Denormalisation happens here so accumulators hold real values.
+                    # Latency: obs_val = actual_ms / (2 * maxLatMs)
+                    #   → actual_ms = obs_val * 2 * maxLatMs
+                    if decoded is not None:
+                        ep_sla_sum       += compute_sla_rate(decoded, cfg)
+                        ep_embb_sum      += (float(decoded["throughput"].get("eMBB",  0.0))
+                                             * float(cfg["env"]["max_thr_mbps"]["eMBB"]))
+                        ep_urllc_thr_sum += (float(decoded["throughput"].get("URLLC", 0.0))
+                                             * float(cfg["env"]["max_thr_mbps"]["URLLC"]))
+                        ep_mmtc_sum      += (float(decoded["throughput"].get("mMTC",  0.0))
+                                             * float(cfg["env"]["max_thr_mbps"]["mMTC"]))
+                        ep_urllc_lat_sum += (float(decoded["latency"].get("URLLC", 0.0))
+                                             * 2.0
+                                             * float(cfg["env"]["max_lat_ms"]["URLLC"]))
+
                     mean_loss_so_far = float(np.mean(ep_losses)) if ep_losses else 0.0
                     mon.step(
                         ep_reward = ep_reward,
@@ -267,20 +299,22 @@ def main() -> None:
 
                 step_bar.close()
 
+                # ── P0-2: compute episode averages from accumulators ──────────
+                n         = max(1, step_count)
+                sla_rate  = ep_sla_sum       / n
+                embb_thr  = ep_embb_sum      / n
+                urllc_thr = ep_urllc_thr_sum / n
+                mmtc_thr  = ep_mmtc_sum      / n
+                urllc_lat = ep_urllc_lat_sum  / n
+                # ─────────────────────────────────────────────────────────────
+
+                # PRB allocation: last-step snapshot is correct here.
+                # PRBs are the agent's control output — the final allocation
+                # after 1000 steps of adjustment, not a metric to be averaged.
                 if decoded is None:
-                    decoded = {"throughput": {s: 0.0 for s in SLICE_NAMES},
-                               "latency":    {s: 0.0 for s in SLICE_NAMES}}
-
-                # Denormalise latency: obs[7] = actual_lat / (2 × maxLatMs),
-                # so actual_lat = obs[7] × 2 × maxLatMs.
-                embb_thr  = float(decoded["throughput"].get("eMBB",  0.0)) * float(cfg["env"]["max_thr_mbps"]["eMBB"])
-                urllc_lat = float(decoded["latency"].get("URLLC",    0.0)) * 2.0 * float(cfg["env"]["max_lat_ms"]["URLLC"])
-                sla_rate  = compute_sla_rate(decoded, cfg)
-
-                mean_loss = float(np.mean(ep_losses)) if ep_losses else 0.0
+                    decoded = {"prb_frac": {}}
                 prb_frac  = decoded.get("prb_frac", {})
-                mmtc_thr  = float(decoded["throughput"].get("mMTC",  0.0)) * float(cfg["env"]["max_thr_mbps"]["mMTC"])
-                urllc_thr = float(decoded["throughput"].get("URLLC", 0.0)) * float(cfg["env"]["max_thr_mbps"]["URLLC"])
+                mean_loss = float(np.mean(ep_losses)) if ep_losses else 0.0
 
                 mon.end_episode(
                     ep_reward   = ep_reward,
@@ -292,21 +326,22 @@ def main() -> None:
                     mean_loss   = mean_loss,
                 )
 
-                # ── JSONL log — one record per episode ────────────────────
+                # JSONL log. All throughput, latency, and sla_rate values are
+                # episode averages as of the P0-2 fix. PRB values are last-step.
                 rec = {
                     "episode":     ep,
-                    "reward":      round(ep_reward,        6),
+                    "reward":      round(ep_reward,  6),
                     "steps":       step_count,
-                    "embb_thr":    round(embb_thr,         6),
-                    "urllc_thr":   round(urllc_thr,        6),
-                    "mmtc_thr":    round(mmtc_thr,         6),
-                    "urllc_lat":   round(urllc_lat,        6),
-                    "sla_rate":    round(sla_rate,         6),
+                    "embb_thr":    round(embb_thr,   6),   # avg Mbps
+                    "urllc_thr":   round(urllc_thr,  6),   # avg Mbps
+                    "mmtc_thr":    round(mmtc_thr,   6),   # avg Mbps
+                    "urllc_lat":   round(urllc_lat,  6),   # avg ms
+                    "sla_rate":    round(sla_rate,   6),   # avg fraction
                     "prb_embb":    max(1, round(prb_frac.get("eMBB",  0.4)  * 25)),
                     "prb_urllc":   max(1, round(prb_frac.get("URLLC", 0.32) * 25)),
                     "prb_mmtc":    max(1, round(prb_frac.get("mMTC",  0.28) * 25)),
-                    "epsilon":     round(agent.epsilon(),  6),
-                    "mean_loss":   round(mean_loss,        6),
+                    "epsilon":     round(agent.epsilon(), 6),
+                    "mean_loss":   round(mean_loss,   6),
                     "buffer_size": len(agent.buffer),
                 }
                 logf.write(json.dumps(rec) + "\n")
