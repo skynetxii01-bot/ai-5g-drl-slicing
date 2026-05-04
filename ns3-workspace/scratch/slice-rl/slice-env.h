@@ -157,6 +157,8 @@ class NrSliceGymEnv : public OpenGymEnv
     std::array<double, kSliceCount> m_thrMbps{};
     std::array<double, kSliceCount> m_latMs{};
     std::array<double, kSliceCount> m_holNorm{};      // HOL delay normalised to [0,1]
+    std :: array < double , kSliceCount> m_holSumMs{};
+    std :: array < uint32_t , kSliceCount > m_holSamples{};
     std::array<uint32_t, kSliceCount> m_uesPerSlice{};
 
     // Flow-level cumulative stat trackers (delta computation each step).
