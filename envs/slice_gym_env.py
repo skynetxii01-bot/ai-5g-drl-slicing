@@ -1,17 +1,22 @@
 """Gym 0.26.2 wrapper for the NS-3 5G slice RL environment.
 
 Observation layout (15 floats, all normalised to [0, 1]):
-    [0:3]   prb_frac   — fraction of totalPrbs allocated to each slice
-    [3:6]   throughput — normalised by per-slice maxThrMbps
-    [6:9]   latency    — normalised by 2 × per-slice maxLatMs
-                         (reads 0.5 at the SLA boundary, not 1.0)
-    [9:12]  hol_delay  — mean Head-of-Line delay per slice,
-                         normalised by per-slice maxLatMs.
-                         Forward-looking congestion proxy: rises before
-                         packets are dropped. Sample-and-hold when no
-                         fresh scheduler callback fires in the 100ms window.
-    [12:15] ue_count   — fraction of maxUes active per slice
-    [12:15] load_pressure — throughput / minThrMbps per slice (clipped)
+    [0:3]   prb_frac      — fraction of totalPrbs allocated to each slice
+    [3:6]   throughput    — normalised by per-slice maxThrMbps
+    [6:9]   latency       — normalised by 2 × per-slice maxLatMs
+                            (reads 0.5 at the SLA boundary, not 1.0)
+    [9:12]  hol_delay     — mean Head-of-Line delay per slice,
+                            normalised by per-slice maxLatMs.
+                            Forward-looking congestion proxy: rises before
+                            packets are dropped. Sample-and-hold when no
+                            fresh scheduler callback fires in the 100ms window.
+    [12:15] sla_headroom  — (thr - minThr) / (maxThr - minThr), clipped to [0, 1].
+                            0.0 = at or below SLA floor.
+                            0.5 = halfway between floor and capacity.
+                            1.0 = at capacity ceiling.
+                            Provides gradient across the full realistic operating
+                            range. Replaces load_pressure (thr/minThr) which
+                            saturated to 1.0 at normal loads.
 """
 
 from __future__ import annotations
@@ -146,7 +151,7 @@ class SliceGymEnv(gym.Env):
             "throughput": dict(zip(SLICE_NAMES, arr[3:6].tolist())),
             "latency":    dict(zip(SLICE_NAMES, arr[6:9].tolist())),
             "hol_delay":  dict(zip(SLICE_NAMES, arr[9:12].tolist())),  # was queue_occ — FINAL
-            "load_pressure" :  dict ( zip (SLICE_NAMES, arr[ 12 : 15 ].tolist())),
+            "sla_headroom" :  dict ( zip (SLICE_NAMES, arr[ 12 : 15 ].tolist())),
         }
     
     @staticmethod
