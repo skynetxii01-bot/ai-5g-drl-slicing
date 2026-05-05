@@ -66,7 +66,7 @@ def load_config(path: Path) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
+def compute_sla_rate(decoded_obs: Dict, cfg: Dict, extra_json: Dict | None = None) -> float:
     """Compute the fraction of slices meeting their SLA at a single step.
 
     This function is the Python-side measurement instrument for SLA compliance.
@@ -84,19 +84,22 @@ def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
     """
     max_thr = cfg["env"]["max_thr_mbps"]
     min_thr = cfg["env"]["min_thr_mbps"]
+    demand_active = [1,1,1]
+    if extra_json and isinstance(extra_json.get("demand_active"), list) and len(extra_json["demand_active"]) == 3:
+        demand_active = [int(x) for x in extra_json["demand_active"]]
     sat = 0
-    for s in SLICE_NAMES:
+    den = 0
+    for i, s in enumerate(SLICE_NAMES):
+        if demand_active[i] == 0:
+            continue
+        den += 1
         thr      = float(decoded_obs["throughput"][s]) * float(max_thr[s])
         lat_norm = float(decoded_obs["latency"][s])
 
-        mmtc_inactive  = (s == "mMTC"  and thr < 0.001)
-        urllc_inactive = (s == "URLLC" and thr < 0.001)
-        slice_inactive = mmtc_inactive or urllc_inactive
-
-        if slice_inactive or (thr >= float(min_thr[s]) and lat_norm <= 0.5):
+        if thr >= float(min_thr[s]) and lat_norm <= 0.5:
             sat += 1
 
-    return sat / len(SLICE_NAMES)
+    return 1.0 if den == 0 else sat / den
 
 
 def find_latest_checkpoint(model_dir: Path) -> Path | None:
@@ -273,7 +276,7 @@ def main() -> None:
                     # Latency: obs_val = actual_ms / (2 * maxLatMs)
                     #   → actual_ms = obs_val * 2 * maxLatMs
                     if decoded is not None:
-                        ep_sla_sum       += compute_sla_rate(decoded, cfg)
+                        ep_sla_sum       += compute_sla_rate(decoded, cfg, info.get("extra_json") if isinstance(info, dict) else None)
                         ep_embb_sum      += (float(decoded["throughput"].get("eMBB",  0.0))
                                              * float(cfg["env"]["max_thr_mbps"]["eMBB"]))
                         ep_urllc_thr_sum += (float(decoded["throughput"].get("URLLC", 0.0))
@@ -290,11 +293,14 @@ def main() -> None:
 
                     mean_loss_so_far = float(np.mean(ep_losses)) if ep_losses else 0.0
                     mon.step(
+                        step_idx  = step_count,
                         ep_reward = ep_reward,
                         epsilon   = agent.epsilon(),
                         loss      = mean_loss_so_far if ep_losses else None,
                         buf_pct   = len(agent.buffer) / agent.cfg.buffer_size,
                         sla_rate  = None,
+                        obs       = obs,
+                        decoded_obs = decoded if isinstance(decoded, dict) else None,
                     )
 
                     if terminal:
