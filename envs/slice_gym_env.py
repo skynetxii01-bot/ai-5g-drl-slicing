@@ -16,11 +16,13 @@ Observation layout (15 floats, all normalised to [0, 1]):
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
+import json 
 
 import gym
 import numpy as np
 from gym import spaces
+import json
 
 # ns3gym is installed inside the project venv only.
 # The guarded import below:
@@ -91,6 +93,44 @@ class SliceGymEnv(gym.Env):
                 f"Expected EXACT {OBS_SIZE}-dim observation from NS-3, got {arr.shape[0]}"
             )
         return arr
+    
+    def _coerce_obs(self, obs_obj: Any) -> np.ndarray:
+        """Unwrap ns3-gym observation payload variants into a flat 15-vector."""
+        obj = obs_obj
+        # Some ns3-gym builds wrap observation in singleton tuple/list.
+        for _ in range(3):
+            if isinstance(obj, tuple) and len(obj) == 1:
+                obj = obj[0]
+                continue
+            if isinstance(obj, list) and len(obj) == 1 and isinstance(obj[0], (list, tuple, np.ndarray)):
+                obj = obj[0]
+                continue
+            break
+        # Some wrappers return dict-like payloads for reset/step.
+        if isinstance(obj, dict):
+            for key in ("obs", "observation", "state", "data"):
+                if key in obj:
+                    obj = obj[key]
+                    break
+        # Some wrappers return textual vectors like "[0.1, 0.2, ...]".
+        if isinstance(obj, str):
+            s = obj.strip()
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    parsed = json.loads(s)
+                    obj = parsed
+                except Exception:
+                    pass
+        # Last-chance unwrap after dict/string conversion.
+        if isinstance(obj, (tuple, list)) and len(obj) == 1 and isinstance(obj[0], (list, tuple, np.ndarray)):
+            obj = obj[0]
+        arr = np.asarray(obj, dtype=np.float32).reshape(-1)
+        if arr.shape[0] == OBS_SIZE:
+            return arr
+        raise ValueError(
+            "Expected EXACT 15-dim observation from NS-3, got "
+            f"{arr.shape[0]} | type={type(obs_obj).__name__} | repr={repr(obs_obj)[:220]}"
+        )
 
     def _decode_obs(self, obs: np.ndarray) -> Dict[str, Dict[str, float]]:
         """Break the flat 15-float observation into a labelled dictionary.
@@ -108,6 +148,32 @@ class SliceGymEnv(gym.Env):
             "hol_delay":  dict(zip(SLICE_NAMES, arr[9:12].tolist())),  # was queue_occ — FINAL
             "load_pressure" :  dict ( zip (SLICE_NAMES, arr[ 12 : 15 ].tolist())),
         }
+    
+    @staticmethod
+    def _coerce_info(info_obj: Any) -> Dict[str, Any]:
+        """Normalize backend info payloads to a dictionary.
+
+        ns3-gym versions are inconsistent: `info` may be a dict, mapping-like
+        object, JSON string, plain string, or None.
+        """
+        if info_obj is None:
+            return {}
+        if isinstance(info_obj, dict):
+            return dict(info_obj)
+        if isinstance(info_obj, Mapping):
+            return dict(info_obj.items())
+        if isinstance(info_obj, str):
+            s = info_obj.strip()
+            if s.startswith("{"):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    pass
+            return {"extraInfo": info_obj}
+        return {"extraInfo": str(info_obj)}
+
 
     def reset(
         self,
@@ -124,11 +190,11 @@ class SliceGymEnv(gym.Env):
         # ns3-gym wrappers differ by version: old returns obs, newer may return (obs, info)
         if isinstance(raw, tuple) and len(raw) == 2:
             obs_raw, info = raw
-            info = dict(info)
+            info = self._coerce_info(info)
         else:
             obs_raw, info = raw, {}
 
-        obs = self._validate_obs(obs_raw)
+        obs = self._coerce_obs(obs_raw)
         info["decoded_obs"] = self._decode_obs(obs)
         return obs, info
 
@@ -149,7 +215,19 @@ class SliceGymEnv(gym.Env):
             raise RuntimeError("Unexpected step() return format from ns3-gym backend")
 
         obs = self._validate_obs(obs_raw)
-        info = dict(info)
+        info = self._coerce_info(info)
+        extra = info.get("extraInfo")
+        if isinstance(extra, str) and extra.strip().startswith("{"):
+            try:
+                info["extra_json"] = json.loads(extra)
+            except Exception:
+                pass
+        extra = info.get("extraInfo")
+        if isinstance(extra, str) and extra.strip().startswith("{"):
+            try:
+                info["extra_json"] = json.loads(extra)
+            except Exception:
+                pass
         info["decoded_obs"] = self._decode_obs(obs)
 
         return obs, float(reward), bool(done), bool(truncated), info
