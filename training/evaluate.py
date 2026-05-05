@@ -81,7 +81,7 @@ def load_config(path: Path) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
+def compute_sla_rate(decoded_obs: Dict, cfg: Dict, extra_json: Dict | None = None) -> float:
     """Fraction of slices meeting SLA this step.
 
     Must stay identical to train.py:compute_sla_rate. Both functions must agree
@@ -94,18 +94,24 @@ def compute_sla_rate(decoded_obs: Dict, cfg: Dict) -> float:
     """
     max_thr = cfg["env"]["max_thr_mbps"]
     min_thr = cfg["env"]["min_thr_mbps"]
+    demand_active = [1, 1, 1]
+    if extra_json and isinstance(extra_json.get("demand_active"), list) and len(extra_json["demand_active"]) == 3:
+        demand_active = [int(x) for x in extra_json["demand_active"]]
+
     sat = 0
-    for s in SLICE_NAMES:
-        thr      = float(decoded_obs["throughput"][s]) * float(max_thr[s])
+    den = 0
+    for i, s in enumerate(SLICE_NAMES):
+        if demand_active[i] == 0:
+            continue
+        den += 1
+        thr = float(decoded_obs["throughput"][s]) * float(max_thr[s])
+        
         lat_norm = float(decoded_obs["latency"][s])
 
-        mmtc_inactive  = (s == "mMTC"  and thr < 0.001)
-        urllc_inactive = (s == "URLLC" and thr < 0.001)
-        slice_inactive = mmtc_inactive or urllc_inactive
-
-        if slice_inactive or (thr >= float(min_thr[s]) and lat_norm <= 0.5):
+        if thr >= float(min_thr[s]) and lat_norm <= 0.5:    
             sat += 1
-    return sat / len(SLICE_NAMES)
+
+    return 1.0 if den == 0 else sat / den
 
 
 def _action_from_delta(d_embb: int, d_urllc: int, d_mmtc: int) -> int:
@@ -269,7 +275,7 @@ def evaluate_policy(
             step_count += 1
 
             # Accumulate step-level metrics for episode averages.
-            sla_sum       += compute_sla_rate(decoded, cfg)
+            sla_sum       += compute_sla_rate(decoded, cfg, info.get("extra_json") if isinstance(info, dict) else None)
             embb_sum      += float(decoded.get("throughput", {}).get("eMBB",  0.0)) \
                              * float(cfg["env"]["max_thr_mbps"]["eMBB"])
             urllc_thr_mbps = float (decoded.get( "throughput" , {}).get( "URLLC" , 0.0 )) \
