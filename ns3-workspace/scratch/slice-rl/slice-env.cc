@@ -597,7 +597,9 @@ NrSliceGymEnv::ScheduleStep()
         m_observation[3 + s]  = Clamp01(m_thrMbps[s] / m_cfg.maxThrMbps[s]);
         m_observation[6 + s]  = Clamp01(m_latMs[s] / (2.0 * m_cfg.maxLatMs[s]));
         m_observation[9 + s]  = m_holNorm[s];
-        m_observation[12 + s] = Clamp01(m_thrMbps[s] / std::max(1e-9, m_cfg.minThrMbps[s]));
+        m_observation[12 + s] = Clamp01(
+        (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
+        std::max(1e-9, m_cfg.maxThrMbps[s] - m_cfg.minThrMbps[s]));
         // used to be "m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) / m_cfg.maxUes[s]);"
     }
 
