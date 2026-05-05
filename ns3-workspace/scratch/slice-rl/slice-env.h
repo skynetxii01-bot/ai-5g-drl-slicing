@@ -124,8 +124,9 @@ class NrSliceGymEnv : public OpenGymEnv
     void EnforceConstraints();
 
     uint8_t ResolveSliceFromPort(uint16_t port) const;
+    uint8_t ResolveSliceFromAddress(const Ipv4Address& dst) const;
     void    TryBuildRntiSliceMap();
-
+    
     Config m_cfg{};
 
     Ptr<NrHelper>         m_nrHelper;
@@ -136,6 +137,7 @@ class NrSliceGymEnv : public OpenGymEnv
     Ptr<Ipv4FlowClassifier> m_flowClassifier;
 
     std::unordered_map<uint64_t, uint8_t> m_imsiToSlice;
+    std::unordered_map<Ipv4Address, uint8_t, Ipv4AddressHash> m_ipToSlice;
     std::unordered_map<uint16_t, uint8_t> m_rntiToSlice;
     std::unordered_map<uint32_t, uint64_t> m_prevRxPackets{};
     std::unordered_map<uint32_t, double>   m_prevDelaySum{};
@@ -160,6 +162,8 @@ class NrSliceGymEnv : public OpenGymEnv
     std :: array < double , kSliceCount> m_holSumMs{};
     std :: array < uint32_t , kSliceCount > m_holSamples{};
     std::array<uint32_t, kSliceCount> m_uesPerSlice{};
+    std::array<double, kSliceCount> m_servedDemandRatio{};
+    std::array<uint8_t, kSliceCount> m_demandActive{};
 
     // Flow-level cumulative stat trackers (delta computation each step).
     // These maps grow with the number of unique flow IDs assigned by FlowMonitor.
