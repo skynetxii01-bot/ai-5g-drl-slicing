@@ -480,6 +480,17 @@ NrSliceGymEnv::ResolveSliceFromPort(uint16_t port) const
     return kSliceCount;   // sentinel: caller must check slice < kSliceCount
 }
 
+uint8_t
+NrSliceGymEnv::ResolveSliceFromAddress(const Ipv4Address& dst) const
+{
+    auto it = m_ipToSlice.find(dst);
+    if (it == m_ipToSlice.end())
+    {
+        return kSliceCount;
+    }
+    return it->second;
+}
+
 void
 NrSliceGymEnv::AggregateFlowStats()
 {
@@ -501,7 +512,12 @@ NrSliceGymEnv::AggregateFlowStats()
         Ipv4FlowClassifier::FiveTuple fiveTuple =
             m_flowClassifier->FindFlow(flowId);
 
-        const uint8_t slice = ResolveSliceFromPort(fiveTuple.destinationPort);
+        uint8_t slice = ResolveSliceFromAddress(fiveTuple.destinationAddress);
+            if (slice >= kSliceCount)
+            {
+             slice = ResolveSliceFromPort(fiveTuple.destinationPort);
+            }
+
         if (slice >= kSliceCount)
         {
             continue;   // unknown port — skip to avoid polluting slice stats
@@ -596,44 +612,45 @@ NrSliceGymEnv::ScheduleStep()
     double   esum2         = 0.0;
     uint32_t activeSlices  = 0;
 
+    m_servedDemandRatio.fill(0.0);
+    m_demandActive.fill(0);
+
+
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
-        const double thrNorm =
-            std::min(1.0, m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]));
+        const double thrNorm = m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]);
         const double prbFrac =
             static_cast<double>(m_prbAlloc[s]) /
             static_cast<double>(m_cfg.totalPrbs);
+        const bool demandActive = (m_holSamples[s] > 0) || (m_holNorm[s] > 0.01) || (m_thrMbps[s] > 0.001);
+        m_demandActive[s] = demandActive ? 1 : 0;
 
+        if (!demandActive)
+        {
+            continue;
+        }
+    
         const bool slaSat =
             (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
             (m_latMs[s]   <= m_cfg.maxLatMs[s]);
 
-        const double thrMargin = std::max(-1.0, std::min(1.0,
-            (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
-            std::max(1e-9, m_cfg.minThrMbps[s])));
-        const double latMargin = std::max(-1.0, std::min(1.0,
-            (m_cfg.maxLatMs[s] - m_latMs[s]) /
-            std::max(1e-9, m_cfg.maxLatMs[s])));
+        const double thrMargin = std::tanh((m_thrMbps[s] - m_cfg.minThrMbps[s]) /
+            std::max(1e-9, m_cfg.minThrMbps[s]));
+        const double latMargin = std::tanh((m_cfg.maxLatMs[s] - m_latMs[s]) /
+            std::max(1e-9, m_cfg.maxLatMs[s]));
 
-        // A slice is "inactive" when its traffic source is in an exponential
-        // off-period. Penalising the agent for off-period steps would introduce
-        // uncontrollable noise into the reward signal.
-        // Duty cycles: mMTC ~10% (on=1s, off=9s), URLLC ~20% (on=50ms, off=200ms).
-        const bool mmtcInactive  = (s == MMTC  && m_thrMbps[s] < 0.001);
-        const bool urllcInactive = (s == URLLC && m_thrMbps[s] < 0.001);
-        const bool sliceInactive = mmtcInactive || urllcInactive;
+        
+        slaViolations += slaSat ? 0 : 1;
 
-        slaViolations += (slaSat || sliceInactive) ? 0 : 1;
+        const double thrNormSoft = std::tanh(std::max(0.0, thrNorm));
+        thrNormAvg   += thrNormSoft;
+        slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
+        const double eff = thrNormSoft / std::max(1e-9, prbFrac);
+        esum  += eff;
+        esum2 += eff * eff;
+        ++activeSlices;
 
-        if (!sliceInactive)
-        {
-            thrNormAvg   += thrNorm;
-            slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
-            const double eff = thrNorm / std::max(1e-9, prbFrac);
-            esum  += eff;
-            esum2 += eff * eff;
-            ++activeSlices;
-        }
+        m_servedDemandRatio[s] = std::min(2.0, m_thrMbps[s] / std::max(1e-9, m_cfg.minThrMbps[s]));
     }
 
     const uint32_t n = std::max(1u, activeSlices);
@@ -642,13 +659,20 @@ NrSliceGymEnv::ScheduleStep()
     const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
     const double effJain = (esum2 > 0.0)
         ? ((esum * esum) / (n * esum2))
-        : 1.0;   // default fair when no active slices
-
+        : 1.0;   
+    const double violationRate = static_cast<double>(slaViolations) / static_cast<double>(n);
     m_reward = static_cast<float>(
-        0.35 * thrNormAvg    +
+        0.40 * thrNormAvg    +
         0.30 * slaMarginNorm +
-        0.35 * effJain       -
-        2.0  * static_cast<double>(slaViolations));
+        0.30 * effJain       -
+        1.20 * violationRate);
+
+            m_extraInfo = "{"
+        "\"demand_active\":[" + std::to_string(m_demandActive[0]) + "," + std::to_string(m_demandActive[1]) + "," + std::to_string(m_demandActive[2]) + "],"
+        "\"served_demand_ratio\":[" + std::to_string(m_servedDemandRatio[0]) + "," + std::to_string(m_servedDemandRatio[1]) + "," + std::to_string(m_servedDemandRatio[2]) + "],"
+        "\"cfg\":{\"max_thr_mbps\":[" + std::to_string(m_cfg.maxThrMbps[0]) + "," + std::to_string(m_cfg.maxThrMbps[1]) + "," + std::to_string(m_cfg.maxThrMbps[2]) + "],"
+        "\"min_thr_mbps\":[" + std::to_string(m_cfg.minThrMbps[0]) + "," + std::to_string(m_cfg.minThrMbps[1]) + "," + std::to_string(m_cfg.minThrMbps[2]) + "],"
+        "\"max_lat_ms\":[" + std::to_string(m_cfg.maxLatMs[0]) + "," + std::to_string(m_cfg.maxLatMs[1]) + "," + std::to_string(m_cfg.maxLatMs[2]) + "]}}";
 
     m_gameOver = Simulator::Now() >= m_cfg.simTime;
     Notify();
