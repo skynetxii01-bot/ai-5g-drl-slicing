@@ -95,6 +95,8 @@ class TrainingMonitor:
         self._epsilon     : Optional[float]  = None
         self._train_steps : Optional[int]    = None
         self._prb         : Dict[str, int]   = {"eMBB": 10, "URLLC": 8, "mMTC": 7}
+        self._last_obs01  : list[float]      = [0.0] * 6
+        self._last_step   : int              = 0
 
     # ------------------------------------------------------------------
     # Context manager
@@ -123,27 +125,57 @@ class TrainingMonitor:
             unit          = "step",
             leave         = False,
             dynamic_ncols = True,
-            colour        = "cyan",
+            colour        = "red",
         )
         return self._step_bar
 
     def step(
         self,
+        step_idx   : int | None  = None,
         ep_reward : float        = 0.0,
         epsilon   : float | None = None,
         loss      : float | None = None,
         buf_pct   : float | None = None,
         sla_rate  : float | None = None,
+        obs       : Optional[object] = None,
+        decoded_obs: Optional[Dict] = None,
     ) -> None:
         """Advance the tqdm bar by one step. Call once per env.step()."""
+        if step_idx is not None:
+            self._last_step = step_idx
+        if obs is not None:
+            try:
+                vals = [float(obs[i]) for i in range(6)]
+                self._last_obs01 = vals
+            except Exception:
+                pass
+        if decoded_obs:
+            prb_frac = decoded_obs.get("prb_frac", {})
+            self._prb = {
+                "eMBB":  max(1, round(prb_frac.get("eMBB",  0.40) * _PRB_TOTAL)),
+                "URLLC": max(1, round(prb_frac.get("URLLC", 0.32) * _PRB_TOTAL)),
+                "mMTC":  max(1, round(prb_frac.get("mMTC",  0.28) * _PRB_TOTAL)),
+            }
+
         if self._step_bar is not None:
             pf: dict = {"r": f"{ep_reward:.1f}"}
             if epsilon  is not None: pf["ε"]    = f"{epsilon:.3f}"
             if loss     is not None: pf["loss"] = f"{loss:.4f}"
             if buf_pct  is not None: pf["buf"]  = f"{buf_pct:.0%}"
             if sla_rate is not None: pf["sla"]  = f"{sla_rate:.0%}"
+            pf["step"] = f"{self._last_step}/{self.max_steps}"
+            pf["prb"] = f"{self._prb['eMBB']}/{self._prb['URLLC']}/{self._prb['mMTC']}"
+            pf["obs0-2"] = ",".join(f"{v:.2f}" for v in self._last_obs01[0:3])
+            pf["obs3-5"] = ",".join(f"{v:.2f}" for v in self._last_obs01[3:6])
             self._step_bar.set_postfix(pf)
             self._step_bar.update(1)
+        if self._last_step > 0 and self._last_step % max(1, self.max_steps // 10) == 0:
+            console.print(
+                f"[bold green][LIVE @ {self._last_step}/{self.max_steps}][/bold green] "
+                f"PRB={self._prb['eMBB']}/{self._prb['URLLC']}/{self._prb['mMTC']} "
+                f"obs0-2={','.join(f'{v:.3f}' for v in self._last_obs01[0:3])} "
+                f"obs3-5={','.join(f'{v:.3f}' for v in self._last_obs01[3:6])}"
+            )
 
     def end_episode(
         self,
