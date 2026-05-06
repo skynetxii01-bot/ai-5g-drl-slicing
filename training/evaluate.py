@@ -296,7 +296,7 @@ def evaluate_policy(
         ep_rewards.append(ep_reward)
         ep_sla_rates.append(sla_sum       / n)
         ep_embb_thrs.append(embb_sum      / n)
-        ep_urllc_lats.append(urllc_lat_sum / max ( 1 , urllc_lat_n))
+        ep_urllc_lats.append((urllc_lat_sum / urllc_lat_n) if urllc_lat_n > 0 else float("nan"))
         ep_prb_embb.append(prb_embb_sum   / n)
         ep_prb_urllc.append(prb_urllc_sum / n)
         ep_prb_mmtc.append(prb_mmtc_sum   / n)
@@ -364,7 +364,7 @@ def main() -> None:
     # ── DRL agent: DQN ────────────────────────────────────────────────────────
     dqn_path = model_dir / "dqn_final.pt"
     if dqn_path.exists():
-        dqn = DuelingDQN(15, 27).to(device)
+        dqn = DuelingDQN(18, 27).to(device)
         ckpt = torch.load(dqn_path, map_location=device)
         dqn.load_state_dict(ckpt["online"])
         dqn.eval()
@@ -384,7 +384,7 @@ def main() -> None:
     # ── DRL agent: PPO ────────────────────────────────────────────────────────
     ppo_path = model_dir / "ppo_final.pt"
     if ppo_path.exists():
-        ppo = ActorCritic(15, 27).to(device)
+        ppo = ActorCritic(18, 27).to(device)
         ckpt = torch.load(ppo_path, map_location=device)
         # Checkpoint key is "model" (set by PpoAgent.save()) — fall back to raw dict.
         ppo.load_state_dict(ckpt.get("model", ckpt))
@@ -410,7 +410,7 @@ def main() -> None:
     r2d2_path = model_dir / "r2d2_final.pt"
     if r2d2_path.exists():
         # FIX: was R2D2Network — the actual class name is R2D2Net.
-        r2d2 = R2D2Net(15, 27).to(device)
+        r2d2 = R2D2Net(18, 27).to(device)
         ckpt = torch.load(r2d2_path, map_location=device)
         r2d2.load_state_dict(ckpt["online"])
         r2d2.eval()
