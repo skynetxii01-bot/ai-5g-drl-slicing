@@ -120,7 +120,7 @@ class TrainingMonitor:
         # Track all 15 obs dims.
         # [0:3]  prb_frac, [3:6] throughput, [6:9] latency,
         # [9:12] hol_delay, [12:15] sla_headroom
-        self._last_obs    : list[float]      = [0.0] * 15
+        self._last_obs    : list[float]      = [0.0] * 18
         self._last_step   : int              = 0
 
         # Running reward mean over last 10 episodes (smoothed signal).
@@ -177,7 +177,7 @@ class TrainingMonitor:
         if step_idx is not None:
             self._last_step = step_idx
 
-        # Store full obs vector (15 dims).
+        # Store full obs vector (18 dims).
         if obs is not None:
             try:
                 self._last_obs = [float(obs[i]) for i in range(min(18 , len(obs)))]
