@@ -180,7 +180,7 @@ class TrainingMonitor:
         # Store full obs vector (15 dims).
         if obs is not None:
             try:
-                self._last_obs = [float(obs[i]) for i in range(min(15, len(obs)))]
+                self._last_obs = [float(obs[i]) for i in range(min(18 , len(obs)))]
             except Exception:
                 pass
 
@@ -236,6 +236,14 @@ class TrainingMonitor:
                  f"{self._last_obs[8]:.3f}"
                  if len(self._last_obs) >= 9 else "n/a"
             )
+                
+            flag_str = (
+                f"{self._last_obs[15]:.0f}/"
+                f"{self._last_obs[16]:.0f}/"
+                f"{self._last_obs[17]:.0f}"
+                if len(self._last_obs) >= 18 else "n/a"
+            )
+                     
             console.print(
                 f"[bold green][LIVE {self.agent_name} "
                 f"@ {self._last_step}/{self.max_steps}][/bold green]  "
@@ -243,6 +251,7 @@ class TrainingMonitor:
                 f"thr_norm={thr_str}  "
                 f"sla_head={head_str}  "
                 f"lat_norm={lat_str}  "
+                f"active={flag_str} "
                 f"r={ep_reward:.3f}"
                 + (f"  ε={epsilon:.4f}" if epsilon is not None else "")
                 + (f"  loss={loss:.4f}" if loss is not None else "")
