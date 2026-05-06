@@ -153,7 +153,7 @@ def main() -> None:
     # The DqnConfig dataclass defaults were historically out of sync with
     # config.yaml — this explicit construction is the authoritative source.
     dqn_cfg = DqnConfig(
-        obs_dim         = 15,
+        obs_dim         = 18,
         action_dim      = 27,
         lr              = float(cfg["dqn"]["lr"]),
         gamma           = float(cfg["dqn"]["gamma"]),
@@ -228,7 +228,8 @@ def main() -> None:
 
     # P0-1 verification: after the maxUes fix, obs[12:15] should read
     # approximately 0.500, 0.500, 0.400 — not 1.0, 1.0, 1.0.
-    print(f"[train.py] obs[12:15] load_pressure = {obs[12]:.3f}, {obs[13]:.3f}, {obs[14]:.3f}")
+    print(f"[train.py] obs[12:15] sla_headroom  = {obs[12]:.3f}, {obs[13]:.3f}, {obs[14]:.3f}")
+    print(f"[train.py] obs[15:18] demand_active = {obs[15]:.0f}, {obs[16]:.0f}, {obs[17]:.0f}")
 
     decoded = info.get("decoded_obs", None)
 
@@ -259,6 +260,28 @@ def main() -> None:
                 for _ in range(max_steps):
                     action = agent.act(obs, explore=True)
                     next_obs, reward, done, truncated, info = env.step(action)
+                    if ep == start_ep and step_count == 0:
+                        ns3_cfg = (info.get("extra_json") or {}).get("cfg", {})
+                        if ns3_cfg:
+                            for key, yaml_key in [
+                                ("max_thr_mbps", "max_thr_mbps"),
+                                ("min_thr_mbps", "min_thr_mbps"),
+                                ("max_lat_ms",   "max_lat_ms"),
+                            ]:
+                                ns3_vals  = ns3_cfg.get(key, [])
+                                yaml_vals = [float(cfg["env"][yaml_key][s]) for s in SLICE_NAMES]
+                                if ns3_vals and [round(v, 4) for v in ns3_vals] != [round(v, 4) for v in yaml_vals]:
+                                   raise RuntimeError(
+                                        f"Config mismatch on '{key}':\n"
+                                        f"  NS-3:        {ns3_vals}\n"
+                                        f"  config.yaml: {yaml_vals}\n"
+                                        f"  Edit one to match the other."
+                                    )
+                            print("[train.py] NS-3 / config.yaml consistency check passed.")
+                        else:
+                            print("[WARN] train.py: extra_json cfg block absent — skipping consistency check.")
+
+
                     terminal = bool(done or truncated)
 
                     agent.store(obs, action, reward, next_obs, terminal)
@@ -315,7 +338,7 @@ def main() -> None:
                 embb_thr  = ep_embb_sum      / n
                 urllc_thr = ep_urllc_thr_sum / n
                 mmtc_thr  = ep_mmtc_sum      / n
-                urllc_lat = ep_urllc_lat_sum  / max(1, ep_urllc_lat_n)
+                urllc_lat = (ep_urllc_lat_sum / ep_urllc_lat_n) if ep_urllc_lat_n > 0 else float("nan")
                 # ─────────────────────────────────────────────────────────────
 
                 # PRB allocation: last-step snapshot is correct here.
@@ -345,7 +368,7 @@ def main() -> None:
                     "embb_thr":    round(embb_thr,   6),   # avg Mbps
                     "urllc_thr":   round(urllc_thr,  6),   # avg Mbps
                     "mmtc_thr":    round(mmtc_thr,   6),   # avg Mbps
-                    "urllc_lat":   round(urllc_lat,  6),   # avg ms
+                    "urllc_lat": None if (isinstance(urllc_lat, float) and urllc_lat != urllc_lat) else round(urllc_lat, 6),   # avg ms
                     "sla_rate":    round(sla_rate,   6),   # avg fraction
                     "prb_embb":    max(1, round(prb_frac.get("eMBB",  0.4)  * 25)),
                     "prb_urllc":   max(1, round(prb_frac.get("URLLC", 0.32) * 25)),
