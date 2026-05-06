@@ -624,7 +624,7 @@ NrSliceGymEnv::ScheduleStep()
         const double prbFrac =
             static_cast<double>(m_prbAlloc[s]) /
             static_cast<double>(m_cfg.totalPrbs);
-        const bool demandActive = (m_holSamples[s] > 0) || (m_holNorm[s] > 0.01) || (m_thrMbps[s] > 0.001);
+        const bool demandActive = (m_thrMbps[s] > 0.001);
         m_demandActive[s] = demandActive ? 1 : 0;
 
         if (!demandActive)
@@ -676,7 +676,13 @@ NrSliceGymEnv::ScheduleStep()
         "\"min_thr_mbps\":[" + std::to_string(m_cfg.minThrMbps[0]) + "," + std::to_string(m_cfg.minThrMbps[1]) + "," + std::to_string(m_cfg.minThrMbps[2]) + "],"
         "\"max_lat_ms\":[" + std::to_string(m_cfg.maxLatMs[0]) + "," + std::to_string(m_cfg.maxLatMs[1]) + "," + std::to_string(m_cfg.maxLatMs[2]) + "]}}";
 
+    
+
+    for (uint8_t s = 0; s < kSliceCount; ++s) //added for the binary flags (each slice has a flag to tell if its on or off)
+    m_observation[15 + s] = static_cast<float>(m_demandActive[s]);
+
     m_gameOver = Simulator::Now() >= m_cfg.simTime;
+
     Notify();
 
     if (!m_gameOver)
