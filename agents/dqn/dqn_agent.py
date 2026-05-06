@@ -18,7 +18,7 @@ from agents.dqn.replay_buffer import ReplayBuffer
 
 @dataclass
 class DqnConfig:
-    obs_dim: int = 15
+    obs_dim: int = 18
     action_dim: int = 27
     lr: float = 1e-4
     gamma: float = 0.99
