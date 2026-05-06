@@ -17,6 +17,9 @@ Observation layout (15 floats, all normalised to [0, 1]):
                             Provides gradient across the full realistic operating
                             range. Replaces load_pressure (thr/minThr) which
                             saturated to 1.0 at normal loads.
+    [15:18] demand_active — 1.0 if slice had fresh measurements this step,
+                            0.0 if in off-period. Disambiguates stale
+                            sample-and-hold latency from fresh measurements.      
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ except ImportError as e:
 
 
 SLICE_NAMES = ("eMBB", "URLLC", "mMTC")
-OBS_SIZE = 15
+OBS_SIZE = 18 
 ACTION_SIZE = 27
 
 
@@ -152,6 +155,7 @@ class SliceGymEnv(gym.Env):
             "latency":    dict(zip(SLICE_NAMES, arr[6:9].tolist())),
             "hol_delay":  dict(zip(SLICE_NAMES, arr[9:12].tolist())),  # was queue_occ — FINAL
             "sla_headroom" :  dict ( zip (SLICE_NAMES, arr[ 12 : 15 ].tolist())),
+            "demand_active": dict(zip(SLICE_NAMES, arr[15:18].tolist())),
         }
     
     @staticmethod
@@ -227,6 +231,13 @@ class SliceGymEnv(gym.Env):
                 info["extra_json"] = json.loads(extra)
             except Exception:
                 pass
+        if "extra_json" not in info and not hasattr(self, "_extrainfo_warned"):
+            self._extrainfo_warned = True
+            print(
+                "[WARN] SliceGymEnv: extraInfo did not parse to JSON on first step. "
+                "demand_active will default to all-active — SLA rate may be inflated. "
+                "Check ns3-gym version and NrSliceGymEnv::GetExtraInfo() output."
+            )
         extra = info.get("extraInfo")
         if isinstance(extra, str) and extra.strip().startswith("{"):
             try:
