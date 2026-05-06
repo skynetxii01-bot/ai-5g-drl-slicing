@@ -20,7 +20,7 @@ class NrSliceGymEnv : public OpenGymEnv
 {
   public:
     static constexpr uint32_t kSliceCount  = 3;
-    static constexpr uint32_t kObsSize     = 15;
+    static constexpr uint32_t kObsSize     = 18;
     static constexpr uint32_t kActionCount = 27;
 
     enum SliceId : uint8_t
@@ -74,11 +74,11 @@ class NrSliceGymEnv : public OpenGymEnv
         // Was incorrectly {10, 5, 20} (equal to simulated counts → obs always 1.0).
         std::array<uint32_t, kSliceCount> maxUes{20, 10, 50};
 
-        // P0-A FIX: mMTC raised from 2.0 → 8.0 Mbps.
-        // 2.0 Mbps == single UE peak rate, which is below expected aggregate
-        // (≈4 Mbps), causing obs[5] to saturate at 1.0 during ~86% of
-        // active-period steps. 8.0 Mbps = 2 × expected aggregate maintains
-        // obs[5] in (0, 1) across the realistic operating range.
+        // maxThrMbps: capacity ceiling used in two places:
+        //   obs[3:6]   = thr / maxThr              (throughput utilisation)
+        //   obs[12:15] = (thr - minThr) / (maxThr - minThr)  (SLA headroom)
+        // Both formulas require maxThr > expected operating throughput to avoid
+        // saturation. Values below are set to 1.5–2× expected aggregate.
         std::array<double, kSliceCount> maxThrMbps{100.0, 10.0, 8.0};
 
         std::array<double, kSliceCount> maxLatMs{50.0, 15.0, 500.0};
