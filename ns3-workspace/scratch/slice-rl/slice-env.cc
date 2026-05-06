@@ -495,7 +495,7 @@ void
 NrSliceGymEnv::AggregateFlowStats()
 {
     m_thrMbps.fill(0.0);
-    m_latMs.fill(0.0);
+    
 
     if (!m_flowMonitor || !m_flowClassifier)
     {
