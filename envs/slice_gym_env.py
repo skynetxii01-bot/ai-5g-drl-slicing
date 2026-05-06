@@ -136,7 +136,7 @@ class SliceGymEnv(gym.Env):
         if arr.shape[0] == OBS_SIZE:
             return arr
         raise ValueError(
-            "Expected EXACT 15-dim observation from NS-3, got "
+            "Expected EXACT 18-dim observation from NS-3, got "
             f"{arr.shape[0]} | type={type(obs_obj).__name__} | repr={repr(obs_obj)[:220]}"
         )
 
