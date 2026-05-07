@@ -655,19 +655,31 @@ NrSliceGymEnv::ScheduleStep()
         m_servedDemandRatio[s] = std::min(2.0, m_thrMbps[s] / std::max(1e-9, m_cfg.minThrMbps[s]));
     }
 
-    const uint32_t n = std::max(1u, activeSlices);
-    thrNormAvg   /= n;
-    slaMarginAvg /= n;
-    const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
-    const double effJain = (esum2 > 0.0)
-        ? ((esum * esum) / (n * esum2))
-        : 1.0;   
-    const double violationRate = static_cast<double>(slaViolations) / static_cast<double>(n);
-    m_reward = static_cast<float>(
+    
+
+        if (activeSlices == 0)
+    {
+    // All slices simultaneously inactive — no service rendered, no learning signal.
+    // Emit zero rather than the +0.45 produced by the Jain fallback.
+        m_reward = 0.0F;
+    }
+        else
+    {
+        const uint32_t n         = activeSlices;  // guaranteed >= 1
+        thrNormAvg              /= n;
+        slaMarginAvg            /= n;
+        const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
+        const double effJain       = (esum2 > 0.0)
+        ? ((esum * esum) / (static_cast<double>(n) * esum2))
+        : 1.0;
+        const double violationRate = static_cast<double>(slaViolations) /
+                                 static_cast<double>(n);
+        m_reward = static_cast<float>(
         0.40 * thrNormAvg    +
         0.30 * slaMarginNorm +
         0.30 * effJain       -
         1.20 * violationRate);
+    }
 
             m_extraInfo = "{"
         "\"demand_active\":[" + std::to_string(m_demandActive[0]) + "," + std::to_string(m_demandActive[1]) + "," + std::to_string(m_demandActive[2]) + "],"
