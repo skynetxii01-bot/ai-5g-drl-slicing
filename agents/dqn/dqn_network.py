@@ -9,7 +9,7 @@ import torch.nn as nn
 class DuelingDQN(nn.Module):
     """Input(15) -> [256, 256, 128] with dueling heads -> Output(27)."""
 
-    def __init__(self, obs_dim: int = 15, action_dim: int = 27) -> None:
+    def __init__(self, obs_dim: int = 18, action_dim: int = 27) -> None:
         super().__init__()
 
         self.feature = nn.Sequential(
