@@ -466,7 +466,7 @@ NrSliceGymEnv::AggregateHolDelay()
         }
 // --- END DIAGNOSTIC ---
 
-        m_holNorm[s] = Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s]));
+        m_holNorm[s] = Clamp01(meanHolMs / std::max(1e-9, 2.0 * m_cfg.maxLatMs[s]));
         m_holSumMs[s] = 0.0 ;
         m_holSamples[s] = 0 ;
     }
