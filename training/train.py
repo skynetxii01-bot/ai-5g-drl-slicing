@@ -193,7 +193,10 @@ def main() -> None:
                             line = line.strip()
                             if line:
                                 last = line
-                    log_ep   = (json.loads(last)["episode"] + 1) if last else ckpt_ep
+                    try:
+                        log_ep = (json.loads(last)["episode"] + 1) if last else ckpt_ep
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        log_ep = ckpt_ep  # truncated last line — fall back to checkpoint episode
                     start_ep = max(ckpt_ep, log_ep)
                 else:
                     start_ep = ckpt_ep
@@ -206,7 +209,10 @@ def main() -> None:
                             line = line.strip()
                             if line:
                                 last = line
-                    start_ep = (json.loads(last)["episode"] + 1) if last else 1
+                    try:
+                        start_ep = (json.loads(last)["episode"] + 1) if last else 1
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                     start_ep = 1  # truncated last line — safe fallback, checkpoint weights still valid
                 else:
                     start_ep = 1
             print(f"[train.py] Continuing from episode {start_ep} "
