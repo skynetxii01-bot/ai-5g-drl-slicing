@@ -299,7 +299,13 @@ def main() -> None:
                     # Latency: obs_val = actual_ms / (2 * maxLatMs)
                     #   → actual_ms = obs_val * 2 * maxLatMs
                     if decoded is not None:
-                        ep_sla_sum       += compute_sla_rate(decoded, cfg, info.get("extra_json") if isinstance(info, dict) else None)
+                        extra_json = info.get("extra_json")
+                        if extra_json is None and obs is not None and len(obs) >= 18:
+                            # obs[15:18] = same m_demandActive[] values that would be in extraInfo JSON.
+                            extra_json = {"demand_active": [int(round(float(obs[15]))),
+                                                            int(round(float(obs[16]))),
+                                                            int(round(float(obs[17])))]}
+                        ep_sla_sum += compute_sla_rate(decoded, cfg, extra_json)
                         ep_embb_sum      += (float(decoded["throughput"].get("eMBB",  0.0))
                                              * float(cfg["env"]["max_thr_mbps"]["eMBB"]))
                         ep_urllc_thr_sum += (float(decoded["throughput"].get("URLLC", 0.0))
