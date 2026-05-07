@@ -275,7 +275,13 @@ def evaluate_policy(
             step_count += 1
 
             # Accumulate step-level metrics for episode averages.
-            sla_sum       += compute_sla_rate(decoded, cfg, info.get("extra_json") if isinstance(info, dict) else None)
+            extra_json = info.get("extra_json")
+            if extra_json is None and obs is not None and len(obs) >= 18:
+                # obs[15:18] = same m_demandActive[] values that would be in extraInfo JSON.
+                extra_json = {"demand_active": [int(round(float(obs[15]))),
+                                                int(round(float(obs[16]))),
+                                                int(round(float(obs[17])))]}
+            ep_sla_sum += compute_sla_rate(decoded, cfg, extra_json)
             embb_sum      += float(decoded.get("throughput", {}).get("eMBB",  0.0)) \
                              * float(cfg["env"]["max_thr_mbps"]["eMBB"])
             urllc_thr_mbps = float (decoded.get( "throughput" , {}).get( "URLLC" , 0.0 )) \
