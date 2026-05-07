@@ -164,6 +164,7 @@ class NrSliceGymEnv : public OpenGymEnv
     std::array<uint32_t, kSliceCount> m_uesPerSlice{};
     std::array<double, kSliceCount> m_servedDemandRatio{};
     std::array<uint8_t, kSliceCount> m_demandActive{};
+    std::array<bool, kSliceCount> m_schedulerActiveThisStep{};
 
     // Flow-level cumulative stat trackers (delta computation each step).
     // These maps grow with the number of unique flow IDs assigned by FlowMonitor.
