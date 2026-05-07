@@ -454,6 +454,18 @@ NrSliceGymEnv::AggregateHolDelay()
         }
 
         const double meanHolMs = m_holSumMs[s] / static_cast < double >(m_holSamples [s]);
+            // --- TEMPORARY DIAGNOSTIC — remove before final training run ---
+        if (m_stepCount <= 20)
+        {
+            NS_LOG_INFO("HOL_DIAG step=" << m_stepCount
+                << " slice=" << static_cast<int>(s)
+                << " samples=" << m_holSamples[s]
+                << " raw_sum=" << m_holSumMs[s]
+                << " meanHolMs=" << meanHolMs
+                << " holNorm=" << Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s])));
+        }
+// --- END DIAGNOSTIC ---
+
         m_holNorm[s] = Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s]));
         m_holSumMs[s] = 0.0 ;
         m_holSamples[s] = 0 ;
@@ -624,7 +636,8 @@ NrSliceGymEnv::ScheduleStep()
         const double prbFrac =
             static_cast<double>(m_prbAlloc[s]) /
             static_cast<double>(m_cfg.totalPrbs);
-        const bool demandActive = (m_schedulerActiveThisStep[s] || m_thrMbps[s] > 0.001);
+        const bool demandActive = (m_thrMbps[s] > 0.001);
+
         m_demandActive[s] = demandActive ? 1 : 0;
 
         if (!demandActive)
