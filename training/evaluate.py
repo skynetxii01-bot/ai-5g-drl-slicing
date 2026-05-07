@@ -258,6 +258,7 @@ def evaluate_policy(
     for ep in range(episodes):
         ep_reward    = 0.0
         sla_sum      = 0.0
+        ep_sla_sum   = 0.0 
         embb_sum     = 0.0
         urllc_lat_sum = 0.0
         urllc_lat_n = 0
@@ -300,7 +301,7 @@ def evaluate_policy(
 
         n = max(1, step_count)
         ep_rewards.append(ep_reward)
-        ep_sla_rates.append(sla_sum       / n)
+        ep_sla_rates.append(ep_sla_sum       / n)
         ep_embb_thrs.append(embb_sum      / n)
         ep_urllc_lats.append((urllc_lat_sum / urllc_lat_n) if urllc_lat_n > 0 else float("nan"))
         ep_prb_embb.append(prb_embb_sum   / n)
@@ -309,7 +310,7 @@ def evaluate_policy(
 
         print(f"  ep {ep + 1:>2}/{episodes}  "
               f"reward={ep_reward:>8.3f}  "
-              f"sla={sla_sum/n:.2f}  "
+              f"sla={ep_sla_sum/n:.2f}  "
               f"eMBB={embb_sum/n:.1f}Mbps  "
               f"URLLC_lat={urllc_lat_sum/max ( 1 , urllc_lat_n):.2f}ms")
 
