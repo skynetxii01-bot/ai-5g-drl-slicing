@@ -238,12 +238,7 @@ class SliceGymEnv(gym.Env):
                 "demand_active will default to all-active — SLA rate may be inflated. "
                 "Check ns3-gym version and NrSliceGymEnv::GetExtraInfo() output."
             )
-        extra = info.get("extraInfo")
-        if isinstance(extra, str) and extra.strip().startswith("{"):
-            try:
-                info["extra_json"] = json.loads(extra)
-            except Exception:
-                pass
+
         info["decoded_obs"] = self._decode_obs(obs)
 
         return obs, float(reward), bool(done), bool(truncated), info
