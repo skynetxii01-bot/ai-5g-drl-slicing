@@ -224,7 +224,7 @@ class SliceGymEnv(gym.Env):
         else:
             raise RuntimeError("Unexpected step() return format from ns3-gym backend")
 
-        obs = self._validate_obs(obs_raw)
+        obs = self._coerce_obs(obs_raw)
         info = self._coerce_info(info)
         extra = info.get("extraInfo")
         if isinstance(extra, str) and extra.strip().startswith("{"):
