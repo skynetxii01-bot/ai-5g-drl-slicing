@@ -462,7 +462,7 @@ NrSliceGymEnv::AggregateHolDelay()
                 << " samples=" << m_holSamples[s]
                 << " raw_sum=" << m_holSumMs[s]
                 << " meanHolMs=" << meanHolMs
-                << " holNorm=" << Clamp01(meanHolMs / std::max(1e-9, m_cfg.maxLatMs[s])));
+                << " holNorm=" << Clamp01(meanHolMs / std::max(1e-9, 2.0 * m_cfg.maxLatMs[s]))); //Unit is milliseconds ( found )
         }
 // --- END DIAGNOSTIC ---
 
