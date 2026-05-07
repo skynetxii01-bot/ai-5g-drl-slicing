@@ -6,7 +6,8 @@ Observation layout (15 floats, all normalised to [0, 1]):
     [6:9]   latency       — normalised by 2 × per-slice maxLatMs
                             (reads 0.5 at the SLA boundary, not 1.0)
     [9:12]  hol_delay     — mean Head-of-Line delay per slice,
-                            normalised by per-slice maxLatMs.
+                            normalised by 2 × per-slice maxLatMs.
+                            SLA boundary maps to 0.5, matching obs[6:9].
                             Forward-looking congestion proxy: rises before
                             packets are dropped. Sample-and-hold when no
                             fresh scheduler callback fires in the 100ms window.
