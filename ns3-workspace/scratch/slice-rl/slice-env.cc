@@ -598,10 +598,9 @@ NrSliceGymEnv::ScheduleStep()
     // obs[3:6]   throughput — normalised by per-slice maxThrMbps
     // obs[6:9]   latency    — normalised by 2×maxLatMs (SLA boundary at 0.5)
     // obs[9:12]  hol_delay  — HOL delay normalised by maxLatMs (forward-looking)
-    // obs[12:15] load_pressure — throughput relative to SLA minimum throughput
-    //                            (thr/minThr, clipped to [0,1]). This replaces
-    //                            static UE-count features that were constant
-    //                            during each run and provided no learning signal.
+    // obs[12:15] sla_headroom — (thr − minThr) / (maxThr − minThr), clipped to [0, 1].
+    //                            0.0 = at or below SLA floor   (thr ≤ minThr)
+    //                            1.0 = at capacity ceiling     (thr = maxThr)
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         m_observation[s]      = Clamp01(static_cast<double>(m_prbAlloc[s]) /
@@ -649,10 +648,10 @@ NrSliceGymEnv::ScheduleStep()
             (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
             (m_latMs[s]   <= m_cfg.maxLatMs[s]);
 
-        const double thrMargin = std::tanh((m_thrMbps[s] - m_cfg.minThrMbps[s]) /
-            std::max(1e-9, m_cfg.minThrMbps[s]));
-        const double latMargin = std::tanh((m_cfg.maxLatMs[s] - m_latMs[s]) /
-            std::max(1e-9, m_cfg.maxLatMs[s]));
+        const double thrMargin = std::tanh(std::max(0.0,                                     // thrMargin, latMargin now ∈ [0,1) — no overlap with violationRate penalty
+            (m_thrMbps[s] - m_cfg.minThrMbps[s]) / std::max(1e-9, m_cfg.minThrMbps[s])));            //    std::max(1e-9, m_cfg.minThrMbps[s]));
+        const double latMargin = std::tanh(std::max(0.0,                                             //  const double latMargin = std::tanh((m_cfg.maxLatMs[s] - m_latMs[s]) /
+            (m_cfg.maxLatMs[s] - m_latMs[s]) / std::max(1e-9, m_cfg.maxLatMs[s])));                  //     std::max(1e-9, m_cfg.maxLatMs[s]));
 
         
         slaViolations += slaSat ? 0 : 1;
@@ -681,15 +680,17 @@ NrSliceGymEnv::ScheduleStep()
         const uint32_t n         = activeSlices;  // guaranteed >= 1
         thrNormAvg              /= n;
         slaMarginAvg            /= n;
-        const double slaMarginNorm = (slaMarginAvg + 1.0) * 0.5;
+        // Also update slaMarginNorm since it no longer goes below 0:
+        const double slaMarginNorm = slaMarginAvg ;  // already in [0,1) — no +1 offset needed
         const double effJain       = (esum2 > 0.0)
         ? ((esum * esum) / (static_cast<double>(n) * esum2))
         : 1.0;
         const double violationRate = static_cast<double>(slaViolations) /
                                  static_cast<double>(n);
+
         m_reward = static_cast<float>(
         0.40 * thrNormAvg    +
-        0.30 * slaMarginNorm +
+        0.30 * slaMarginNorm +   // range [0,1), not [0,1] normalized
         0.30 * effJain       -
         1.20 * violationRate);
     }
