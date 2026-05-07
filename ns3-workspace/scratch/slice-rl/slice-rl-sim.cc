@@ -289,7 +289,7 @@ main(int argc, char* argv[])
     // URLLC (maxThr=10 >> expected≈5), where maxThr is set well above the
     // expected aggregate to avoid saturation.
     // -----------------------------------------------------------------------
-    cfg.maxThrMbps   = {100.0, 25.0, 8.0};   // FIX: was {100.0, 20.0, 2.0}
+    cfg.maxThrMbps   = {100.0, 10.0, 8.0};   // FIX: was {100.0, 25.0, 2.0}
 
     cfg.maxLatMs     = {50.0,  15.0, 500.0};
     cfg.minThrMbps   = {10.0,  1.0,  0.1};
