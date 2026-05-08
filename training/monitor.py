@@ -268,6 +268,7 @@ class TrainingMonitor:
         train_steps : Optional[int]   = None,
         mean_loss   : Optional[float] = None,
         buf_pct     : Optional[float] = None,
+        extra_metrics : Optional[Dict]       = None,
     ) -> None:
         """
         Call AFTER the step loop, before logging to JSONL.
@@ -332,6 +333,14 @@ class TrainingMonitor:
             self.writer.add_scalar("training/mean_loss",     mean_loss,   self._ep)
         if buf_pct is not None:
             self.writer.add_scalar("training/buffer_fill",   buf_pct,     self._ep)
+            # Log any additional metrics passed from the training loop.
+        # Keys are used directly as TensorBoard tag names, so use
+        # slash-separated strings like "reward_terms/thr_norm" to get
+        # automatic grouping in the TensorBoard scalars panel.
+        if extra_metrics:
+            for tag, value in extra_metrics.items():
+                if value is not None and value == value:   # skip None and NaN
+                    self.writer.add_scalar(tag, float(value), self._ep)
         self.writer.flush()
 
         # ── Terminal ──────────────────────────────────────────────────
