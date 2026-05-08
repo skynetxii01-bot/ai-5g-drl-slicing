@@ -11,13 +11,12 @@ Observation layout (15 floats, all normalised to [0, 1]):
                             Forward-looking congestion proxy: rises before
                             packets are dropped. Sample-and-hold when no
                             fresh scheduler callback fires in the 100ms window.
-    [12:15] sla_headroom  — (thr - minThr) / (maxThr - minThr), clipped to [0, 1].
-                            0.0 = at or below SLA floor.
-                            0.5 = halfway between floor and capacity.
-                            1.0 = at capacity ceiling.
-                            Provides gradient across the full realistic operating
-                            range. Replaces load_pressure (thr/minThr) which
-                            saturated to 1.0 at normal loads.
+    [12:15] prb_efficiency — (thr/maxThr) / (prb/totalPrbs) / 5.0, clipped to [0, 1].
+                             0.0 = no throughput per PRB (silent or starved slice).
+                             0.5 = SLA-level throughput at fair PRB share.
+                             1.0 = full throughput at minimum PRB allocation.
+                             Orthogonal to obs[0:3] and obs[3:6] individually;
+                             encodes their ratio, which neither encodes alone.
     [15:18] demand_active — 1.0 if slice had fresh measurements this step,
                             0.0 if in off-period. Disambiguates stale
                             sample-and-hold latency from fresh measurements.      
@@ -27,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Tuple
 import json 
+import time
 
 import gym
 import numpy as np
@@ -52,6 +52,26 @@ except ImportError as e:
 SLICE_NAMES = ("eMBB", "URLLC", "mMTC")
 OBS_SIZE = 18 
 ACTION_SIZE = 27
+
+# #region agent log
+def debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    payload = {
+        "sessionId": "73bf42",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        from pathlib import Path as _Path
+        _Path(__file__).resolve().parents[1].joinpath("debug-73bf42.log").open(
+            "a", encoding="utf-8"
+        ).write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+# #endregion
 
 
 class SliceGymEnv(gym.Env):
@@ -155,7 +175,7 @@ class SliceGymEnv(gym.Env):
             "throughput": dict(zip(SLICE_NAMES, arr[3:6].tolist())),
             "latency":    dict(zip(SLICE_NAMES, arr[6:9].tolist())),
             "hol_delay":  dict(zip(SLICE_NAMES, arr[9:12].tolist())),  # was queue_occ — FINAL
-            "sla_headroom" :  dict ( zip (SLICE_NAMES, arr[ 12 : 15 ].tolist())),
+            "prb_efficiency": dict(zip(SLICE_NAMES, arr[12:15].tolist())),
             "demand_active": dict(zip(SLICE_NAMES, arr[15:18].tolist())),
         }
     
@@ -206,6 +226,11 @@ class SliceGymEnv(gym.Env):
 
         obs = self._coerce_obs(obs_raw)
         info["decoded_obs"] = self._decode_obs(obs)
+        # #region agent log
+        debug_log("baseline", "H2", "slice_gym_env.py:reset", "Gym wrapper reset decoded observation", {
+            "obs_len": int(obs.shape[0]), "keys": list(info["decoded_obs"].keys())
+        })
+        # #endregion
         return obs, info
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
@@ -224,14 +249,60 @@ class SliceGymEnv(gym.Env):
         else:
             raise RuntimeError("Unexpected step() return format from ns3-gym backend")
 
+        if not hasattr(self, "_debug_raw_info_count"):
+            self._debug_raw_info_count = 0
+        self._debug_raw_info_count += 1
+        if self._debug_raw_info_count <= 3:
+            raw_info_preview = str(info)
+            # #region agent log
+            debug_log("baseline", "H6", "slice_gym_env.py:step:raw_info", "Raw info payload before coercion", {
+                "raw_type": type(info).__name__,
+                "raw_len": int(len(raw_info_preview)),
+                "raw_preview": raw_info_preview[:220],
+            })
+            # #endregion
+
         obs = self._coerce_obs(obs_raw)
         info = self._coerce_info(info)
-        extra = info.get("extraInfo")
-        if isinstance(extra, str) and extra.strip().startswith("{"):
-            try:
-                info["extra_json"] = json.loads(extra)
-            except Exception:
-                pass
+        # ns3-gym may deliver C++ extraInfo in two shapes:
+        # 1) {"extraInfo":"{...json...}"}  (older wrappers)
+        # 2) {"demand_active":[...], "served_demand_ratio":[...], "cfg":{...}} (already parsed)
+        # Normalize both into info["extra_json"] so training/eval consume one contract.
+        if "extra_json" not in info:
+            if all(k in info for k in ("demand_active", "served_demand_ratio", "cfg")):
+                info["extra_json"] = {
+                    "demand_active": info.get("demand_active"),
+                    "served_demand_ratio": info.get("served_demand_ratio"),
+                    "cfg": info.get("cfg"),
+                }
+                if self._debug_raw_info_count <= 3:
+                    # #region agent log
+                    debug_log("post-fix", "H6", "slice_gym_env.py:step:extra_json", "extra_json built from already-parsed dict info", {
+                        "source": "direct_dict_keys",
+                        "cfg_keys": list((info.get("cfg") or {}).keys()) if isinstance(info.get("cfg"), dict) else [],
+                    })
+                    # #endregion
+            else:
+                extra = info.get("extraInfo")
+                if isinstance(extra, str) and extra.strip().startswith("{"):
+                    try:
+                        info["extra_json"] = json.loads(extra)
+                        if self._debug_raw_info_count <= 3:
+                            # #region agent log
+                            debug_log("post-fix", "H6", "slice_gym_env.py:step:extra_json", "extra_json parsed from extraInfo string", {
+                                "source": "extraInfo_json_string"
+                            })
+                            # #endregion
+                    except Exception:
+                        pass
+        if self._debug_raw_info_count <= 3:
+            # #region agent log
+            debug_log("baseline", "H6", "slice_gym_env.py:step:coerced_info", "Coerced info payload after parsing", {
+                "keys": list(info.keys()),
+                "has_extraInfo": bool("extraInfo" in info),
+                "has_extra_json": bool("extra_json" in info),
+            })
+            # #endregion
         if "extra_json" not in info and not hasattr(self, "_extrainfo_warned"):
             self._extrainfo_warned = True
             print(
@@ -241,6 +312,16 @@ class SliceGymEnv(gym.Env):
             )
 
         info["decoded_obs"] = self._decode_obs(obs)
+        if not hasattr(self, "_debug_step_count"):
+            self._debug_step_count = 0
+        self._debug_step_count += 1
+        if self._debug_step_count <= 3:
+            # #region agent log
+            debug_log("baseline", "H3", "slice_gym_env.py:step", "Gym wrapper step decoded payload", {
+                "action": int(act), "reward": float(reward), "done": bool(done), "truncated": bool(truncated),
+                "obs_len": int(obs.shape[0]), "has_extra_json": bool("extra_json" in info)
+            })
+            # #endregion
 
         return obs, float(reward), bool(done), bool(truncated), info
 
