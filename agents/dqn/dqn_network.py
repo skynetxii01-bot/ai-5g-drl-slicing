@@ -1,4 +1,4 @@
-"""Dueling Double-DQN network for 15-dim observation and 27 actions."""
+"""Dueling Double-DQN network for 18-dim observation and 27 actions."""
 
 from __future__ import annotations
 
