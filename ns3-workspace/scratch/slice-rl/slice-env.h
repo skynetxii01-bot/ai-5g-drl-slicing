@@ -79,7 +79,7 @@ class NrSliceGymEnv : public OpenGymEnv
         //   obs[12:15] = (thr - minThr) / (maxThr - minThr)  (SLA headroom)
         // Both formulas require maxThr > expected operating throughput to avoid
         // saturation. Values below are set to 1.5–2× expected aggregate.
-        std::array<double, kSliceCount> maxThrMbps{100.0, 25.0, 8.0};
+        std::array<double, kSliceCount> maxThrMbps{100.0, 10.0, 8.0};
 
         std::array<double, kSliceCount> maxLatMs{50.0, 15.0, 500.0};
         std::array<double, kSliceCount> minThrMbps{10.0, 1.0, 0.1};
