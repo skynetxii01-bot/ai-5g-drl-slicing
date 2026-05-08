@@ -205,7 +205,7 @@ class TrainingMonitor:
             )
             # Show sla_headroom (obs[12:15]) — the fixed feature.
             if len(self._last_obs) >= 15:
-                pf["head"] = (
+                pf["eff"] = (
                     f"{self._last_obs[12]:.2f}/"
                     f"{self._last_obs[13]:.2f}/"
                     f"{self._last_obs[14]:.2f}"
@@ -218,7 +218,7 @@ class TrainingMonitor:
             self._last_step > 0
             and self._last_step % max(1, self.max_steps // 10) == 0
         ):
-            head_str = (
+            eff_str = (
                 f"{self._last_obs[12]:.3f}/"
                 f"{self._last_obs[13]:.3f}/"
                 f"{self._last_obs[14]:.3f}"
@@ -249,7 +249,7 @@ class TrainingMonitor:
                 f"@ {self._last_step}/{self.max_steps}][/bold green]  "
                 f"PRB={self._prb['eMBB']}/{self._prb['URLLC']}/{self._prb['mMTC']}  "
                 f"thr_norm={thr_str}  "
-                f"sla_head={head_str}  "
+                f"prb_eff={eff_str}  "
                 f"lat_norm={lat_str}  "
                 f"active={flag_str} "
                 f"r={ep_reward:.3f}"
@@ -321,9 +321,9 @@ class TrainingMonitor:
         self.writer.add_scalar("throughput/eMBB_Mbps",   embb_thr,   self._ep)
         self.writer.add_scalar("latency/URLLC_ms",       urllc_lat,  self._ep)
         if headroom:
-            self.writer.add_scalar("obs/sla_headroom_eMBB",  headroom["eMBB"],  self._ep)
-            self.writer.add_scalar("obs/sla_headroom_URLLC", headroom["URLLC"], self._ep)
-            self.writer.add_scalar("obs/sla_headroom_mMTC",  headroom["mMTC"],  self._ep)
+            self.writer.add_scalar("obs/prb_efficiency_eMBB",  headroom["eMBB"],  self._ep)
+            self.writer.add_scalar("obs/prb_efficiency_URLLC", headroom["URLLC"], self._ep)
+            self.writer.add_scalar("obs/prb_efficiency_mMTC",  headroom["mMTC"],  self._ep)
         if epsilon is not None:
             self.writer.add_scalar("exploration/epsilon",    epsilon,     self._ep)
         if train_steps is not None:
@@ -410,7 +410,7 @@ class TrainingMonitor:
         table.add_row("eMBB thr",   f"{self._embb_thr:>10.2f}  Mbps")
         table.add_row("URLLC lat",  f"{self._urllc_lat:>10.3f}  ms")
         table.add_row("PRB alloc",  self._prb_bar())
-        table.add_row("SLA headroom", self._headroom_bar(headroom))
+        table.add_row("PRB efficiency", self._headroom_bar(headroom))
 
         if self._mean_loss is not None and self._mean_loss > 0.0:
             table.add_row("Mean loss",  f"{self._mean_loss:>12.6f}")
