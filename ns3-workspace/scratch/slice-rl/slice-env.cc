@@ -224,7 +224,15 @@ NrSliceGymEnv::OnSchedulerNotify(
     m_extraInfo          = extraInfo;
     m_updateWeightsFn    = updateWeightsFn;
 
-    TryBuildRntiSliceMap();
+    TryBuildRntiSliceMap();TryBuildRntiSliceMap();
+    if (!m_rntiMapReady)
+    {
+        NS_LOG_WARN("OnSchedulerNotify: RNTI map not ready — dropping "
+                    << observations.size() << " HOL observations this callback.");
+    }
+    if (m_rntiMapReady)
+    {
+        for (const auto& obs : observations)
         if (m_rntiMapReady)
     {
         for ( const auto & obs : observations)
@@ -368,20 +376,26 @@ NrSliceGymEnv::EnforceConstraints()
     int safetyCounter = 0;
     while (diff < 0)
     {
-        const uint8_t maxSlice = static_cast<uint8_t>(
-            std::distance(m_prbAlloc.begin(),
-                          std::max_element(m_prbAlloc.begin(), m_prbAlloc.end())));
-
-        if (m_prbAlloc[maxSlice] <= 1 || ++safetyCounter > 100)
+        // Rotate the starting slice index by m_stepCount to avoid always
+        // removing from eMBB (index 0) when slices are tied for maximum.
+        bool removed = false;
+        for (uint8_t i = 0; i < kSliceCount && diff < 0; ++i)
+        {
+            const uint8_t idx = (m_stepCount + i) % kSliceCount;
+            if (m_prbAlloc[idx] > 1)
+            {
+                --m_prbAlloc[idx];
+                ++diff;
+                removed = true;
+            }
+        }
+        if (!removed || ++safetyCounter > 100)
         {
             NS_LOG_WARN("NrSliceGymEnv::EnforceConstraints: "
                         "cannot converge, resetting to initialPrbAlloc");
             m_prbAlloc = m_cfg.initialPrbAlloc;
             break;
         }
-
-        --m_prbAlloc[maxSlice];
-        ++diff;
     }
 }
 
@@ -668,7 +682,8 @@ NrSliceGymEnv::ScheduleStep()
     // obs[0:3]   prb_frac  — current PRB allocation as fraction of totalPrbs
     // obs[3:6]   throughput — normalised by per-slice maxThrMbps
     // obs[6:9]   latency    — normalised by 2×maxLatMs (SLA boundary at 0.5)
-    // obs[9:12]  hol_delay  — HOL delay normalised by maxLatMs (forward-looking)
+    // obs[9:12]  hol_delay  — HOL delay normalised by 2 × maxLatMs (forward-looking).
+    //                         SLA boundary maps to 0.5, matching obs[6:9].
     // obs[12:15] prb_efficiency — (thr/maxThr) / (prb/totalPrbs) / 5.0, clipped to [0, 1].
     //                             0.0 = no throughput per PRB (silent or starved).
     //                             0.5 = SLA-level throughput at fair PRB share.
