@@ -141,11 +141,8 @@ def _action_from_delta(d_embb: int, d_urllc: int, d_mmtc: int) -> int:
     Verification spot-checks:
       (0, 0, 0) -> 13 (no change)     [action 13 in kActionDelta]
       (1, 0, 0) -> 22 (eMBB +1 only)  [action 22: {1,0,0}]
-      (-1,0, 1) ->  2 (eMBB-1,mMTC+1) [action 2: {-1,-1,1}... wait let me recheck]
-
-    Actually from the table:
-      action 2: {-1,-1,1} = (-1,-1,1)
-      (-1+1)*9 + (-1+1)*3 + (1+1) = 0 + 0 + 2 = 2 ✓
+      (-1, 0,  1) ->  5 (eMBB-1, mMTC+1)  [(-1+1)*9 + (0+1)*3 + (1+1) = 0+3+2 = 5 ✓]
+      (-1,-1,  1) ->  2 (eMBB-1, URLLC-1, mMTC+1)  [0+0+2 = 2 ✓]
     """
     return (d_embb + 1) * 9 + (d_urllc + 1) * 3 + (d_mmtc + 1)
 
