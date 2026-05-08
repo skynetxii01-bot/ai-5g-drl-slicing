@@ -36,6 +36,7 @@ import json
 import os
 import random
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -51,6 +52,23 @@ MODEL_DIR = PROJECT_ROOT / "results" / "models"
 from agents.dqn.dqn_agent import DqnAgent, DqnConfig
 from envs.slice_gym_env import SLICE_NAMES, SliceGymEnv
 from monitor import TrainingMonitor
+
+# #region agent log
+def debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    payload = {
+        "sessionId": "73bf42",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        (PROJECT_ROOT / "debug-73bf42.log").open("a", encoding="utf-8").write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+# #endregion
 
 
 def set_seed(seed: int) -> None:
@@ -135,6 +153,11 @@ def main() -> None:
     parser.add_argument("--device",   type=str,
                         default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
+    # #region agent log
+    debug_log("baseline", "H1", "train.py:main:args", "Train entrypoint parsed args", {
+        "port": int(args.port), "seed": int(args.seed), "config": str(args.config), "resume": bool(args.resume)
+    })
+    # #endregion
 
     cfg = load_config(Path(args.config))
     if args.episodes is None:
@@ -230,11 +253,16 @@ def main() -> None:
 
     print(f"[train.py] Connecting to NS-3 on port {args.port}...")
     obs, info = env.reset()
+    # #region agent log
+    debug_log("baseline", "H2", "train.py:main:reset", "Environment reset successful", {
+        "obs_len": int(len(obs)), "has_decoded_obs": bool("decoded_obs" in info)
+    })
+    # #endregion
     print("[train.py] Connected. Starting training.")
 
     # P0-1 verification: after the maxUes fix, obs[12:15] should read
     # approximately 0.500, 0.500, 0.400 — not 1.0, 1.0, 1.0.
-    print(f"[train.py] obs[12:15] sla_headroom  = {obs[12]:.3f}, {obs[13]:.3f}, {obs[14]:.3f}")
+    print(f"[train.py] obs[12:15] prb_frac  = {obs[12]:.3f}, {obs[13]:.3f}, {obs[14]:.3f}")
     print(f"[train.py] obs[15:18] demand_active = {obs[15]:.0f}, {obs[16]:.0f}, {obs[17]:.0f}")
 
     decoded = info.get("decoded_obs", None)
@@ -266,6 +294,14 @@ def main() -> None:
                 for _ in range(max_steps):
                     action = agent.act(obs, explore=True)
                     next_obs, reward, done, truncated, info = env.step(action)
+                    if step_count < 3:
+                        # #region agent log
+                        debug_log("baseline", "H3", "train.py:episode:step", "Early training step sample", {
+                            "episode": int(ep), "step": int(step_count + 1), "action": int(action),
+                            "reward": float(reward), "done": bool(done), "truncated": bool(truncated),
+                            "next_obs_len": int(len(next_obs))
+                        })
+                        # #endregion
                     if ep == start_ep and step_count == 0:
                         ns3_cfg = (info.get("extra_json") or {}).get("cfg", {})
                         if ns3_cfg:
@@ -277,6 +313,11 @@ def main() -> None:
                                 ns3_vals  = ns3_cfg.get(key, [])
                                 yaml_vals = [float(cfg["env"][yaml_key][s]) for s in SLICE_NAMES]
                                 if ns3_vals and [round(v, 4) for v in ns3_vals] != [round(v, 4) for v in yaml_vals]:
+                                   # #region agent log
+                                   debug_log("baseline", "H4", "train.py:cfg_check:mismatch", "Config mismatch detected", {
+                                       "key": str(key), "ns3": ns3_vals, "yaml": yaml_vals
+                                   })
+                                   # #endregion
                                    raise RuntimeError(
                                         f"Config mismatch on '{key}':\n"
                                         f"  NS-3:        {ns3_vals}\n"
@@ -284,6 +325,13 @@ def main() -> None:
                                         f"  Edit one to match the other."
                                     )
                             print("[train.py] NS-3 / config.yaml consistency check passed.")
+                            # #region agent log
+                            debug_log("baseline", "H4", "train.py:cfg_check:ok", "NS3 and YAML config match", {
+                                "max_thr": ns3_cfg.get("max_thr_mbps", []),
+                                "min_thr": ns3_cfg.get("min_thr_mbps", []),
+                                "max_lat": ns3_cfg.get("max_lat_ms", []),
+                            })
+                            # #endregion
                         else:
                             print("[WARN] train.py: extra_json cfg block absent — skipping consistency check.")
 
