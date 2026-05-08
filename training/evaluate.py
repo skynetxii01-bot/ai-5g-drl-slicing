@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -59,6 +60,23 @@ from agents.dqn.dqn_network import DuelingDQN
 from agents.ppo.actor_critic import ActorCritic
 from agents.r2d2.r2d2_network import R2D2Net          # FIX: was R2D2Network (wrong class name)
 from envs.slice_gym_env import SliceGymEnv, SLICE_NAMES
+
+# #region agent log
+def debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    payload = {
+        "sessionId": "73bf42",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        (PROJECT_ROOT / "debug-73bf42.log").open("a", encoding="utf-8").write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+# #endregion
 
 # ---------------------------------------------------------------------------
 # Type alias: a policy function takes (obs, hidden) and returns (action, hidden).
@@ -350,6 +368,12 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg       = load_config(Path(args.config))
+    # #region agent log
+    debug_log("baseline", "H5", "evaluate.py:main:start", "Evaluation entrypoint parsed args", {
+        "port": int(args.port), "episodes": int(args.episodes), "max_steps": int(args.max_steps),
+        "config": str(args.config)
+    })
+    # #endregion
     device    = torch.device(args.device)
     model_dir = PROJECT_ROOT / "results" / "models"
 
@@ -364,6 +388,11 @@ def main() -> None:
     env = SliceGymEnv(port=args.port, sim_seed=args.seed, start_sim=False)
     print(f"[evaluate.py] Connecting to NS-3 on port {args.port}...")
     obs, info = env.reset()
+    # #region agent log
+    debug_log("baseline", "H5", "evaluate.py:main:reset", "Evaluation reset successful", {
+        "obs_len": int(len(obs)), "has_decoded_obs": bool("decoded_obs" in info)
+    })
+    # #endregion
     print("[evaluate.py] Connected. Beginning evaluation.\n")
 
     results: Dict[str, Dict] = {}
