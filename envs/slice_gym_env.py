@@ -124,7 +124,7 @@ class SliceGymEnv(gym.Env):
         return arr
     
     def _coerce_obs(self, obs_obj: Any) -> np.ndarray:
-        """Unwrap ns3-gym observation payload variants into a flat 15-vector."""
+        """Unwrap ns3-gym observation payload variants into a flat 18-vector."""
         obj = obs_obj
         # Some ns3-gym builds wrap observation in singleton tuple/list.
         for _ in range(3):
@@ -162,7 +162,7 @@ class SliceGymEnv(gym.Env):
         )
 
     def _decode_obs(self, obs: np.ndarray) -> Dict[str, Dict[str, float]]:
-        """Break the flat 15-float observation into a labelled dictionary.
+        """Break the flat 18-float observation into a labelled dictionary.
 
         IMPORTANT: the third channel (obs[9:12]) is labelled 'hol_delay'.
         It was renamed from 'queue_occ' in session 2026-05-03 to match the
