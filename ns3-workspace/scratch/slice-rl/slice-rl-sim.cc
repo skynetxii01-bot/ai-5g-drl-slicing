@@ -17,6 +17,7 @@
 #include "ns3/point-to-point-module.h"
 
 #include <array>
+#include <fstream>
 #include <iostream>
 
 using namespace ns3;
@@ -82,6 +83,28 @@ main(int argc, char* argv[])
     cmd.AddValue("seed", "Simulation RNG seed", seed);
     cmd.AddValue("simTime", "Simulation time [s]", simTimeSeconds);
     cmd.Parse(argc, argv);
+    // #region agent log
+    {
+        const std::string line =
+            std::string("{\"sessionId\":\"73bf42\",\"runId\":\"baseline\",\"hypothesisId\":\"H6\",") +
+            "\"location\":\"slice-rl-sim.cc:main:start\"," +
+            "\"message\":\"C++ main entered\"," +
+            "\"data\":{\"gymPort\":" + std::to_string(gymPort) + ",\"simTime\":" +
+            std::to_string(simTimeSeconds) + ",\"seed\":" + std::to_string(seed) +
+            "},\"timestamp\":0}\n";
+        std::ofstream out1("/home/skynetxii/5g-project/ns-allinone-3.45/debug-73bf42.log",
+                           std::ios::app);
+        if (out1.is_open())
+        {
+            out1 << line;
+        }
+        std::ofstream out2("/tmp/debug-73bf42.log", std::ios::app);
+        if (out2.is_open())
+        {
+            out2 << line;
+        }
+    }
+    // #endregion
 
     RngSeedManager::SetSeed(1);
     RngSeedManager::SetRun(seed);
@@ -289,7 +312,7 @@ main(int argc, char* argv[])
     // URLLC (maxThr=10 >> expected≈5), where maxThr is set well above the
     // expected aggregate to avoid saturation.
     // -----------------------------------------------------------------------
-    cfg.maxThrMbps   = {100.0, 10.0, 8.0};   // FIX: was {100.0, 25.0, 2.0}
+    cfg.maxThrMbps   = {100.0, 25.0, 8.0};   // FIX: was {100.0, 10.0, 2.0}
 
     cfg.maxLatMs     = {50.0,  15.0, 500.0};
     cfg.minThrMbps   = {10.0,  1.0,  0.1};
