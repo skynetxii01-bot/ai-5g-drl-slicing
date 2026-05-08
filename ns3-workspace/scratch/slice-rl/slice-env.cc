@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <numeric>
 
 namespace ns3
@@ -52,6 +53,39 @@ Clamp01(double v)
 {
     return static_cast<float>(std::max(0.0, std::min(1.0, v)));
 }
+
+// #region agent log
+inline void
+DebugLog(const std::string& runId,
+         const std::string& hypothesisId,
+         const std::string& location,
+         const std::string& message,
+         const std::string& data)
+{
+    const std::string line =
+        "{\"sessionId\":\"73bf42\",\"runId\":\"" + runId +
+        "\",\"hypothesisId\":\"" + hypothesisId +
+        "\",\"location\":\"" + location +
+        "\",\"message\":\"" + message +
+        "\",\"data\":" + data +
+        ",\"timestamp\":" + std::to_string(Simulator::Now().GetMilliSeconds()) + "}\n";
+    {
+        std::ofstream out("/home/skynetxii/5g-project/ns-allinone-3.45/debug-73bf42.log",
+                          std::ios::app);
+        if (out.is_open())
+        {
+            out << line;
+        }
+    }
+    {
+        std::ofstream out("/tmp/debug-73bf42.log", std::ios::app);
+        if (out.is_open())
+        {
+            out << line;
+        }
+    }
+}
+// #endregion
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -293,6 +327,17 @@ NrSliceGymEnv::ExecuteActions(Ptr<OpenGymDataContainer> action)
 
     EnforceConstraints();
     ApplySliceWeights();
+    // #region agent log
+    DebugLog("baseline",
+             "H4",
+             "slice-env.cc:ExecuteActions",
+             "Action decoded and PRB allocation updated",
+             "{\"actionId\":" + std::to_string(actionId) +
+                 ",\"prb\":" +
+                 "[" + std::to_string(m_prbAlloc[0]) + "," +
+                 std::to_string(m_prbAlloc[1]) + "," +
+                 std::to_string(m_prbAlloc[2]) + "]}");
+    // #endregion
     return true;
 }
 
@@ -591,6 +636,32 @@ NrSliceGymEnv::ScheduleStep()
     ++m_stepCount;
     AggregateFlowStats();
     AggregateHolDelay();
+    // #region agent log
+    DebugLog("baseline",
+             "H1",
+             "slice-env.cc:ScheduleStep:raw_metrics",
+             "Raw throughput and latency before normalization",
+             "{\"step\":" + std::to_string(m_stepCount) +
+                 ",\"thr_mbps\":[" + std::to_string(m_thrMbps[0]) + "," +
+                 std::to_string(m_thrMbps[1]) + "," +
+                 std::to_string(m_thrMbps[2]) + "],\"lat_ms\":[" +
+                 std::to_string(m_latMs[0]) + "," + std::to_string(m_latMs[1]) + "," +
+                 std::to_string(m_latMs[2]) + "]}");
+    // #endregion
+        // Clear stale latency for slices with no active traffic this step.
+    // m_latMs[s] is only updated when packets arrive (AggregateFlowStats),
+    // so during off-periods it holds the value from the last active step.
+    // m_thrMbps[s] IS reset to 0 every step, so it is the correct gate.
+    // Without this, obs[6:9] contradicts obs[15:18]: agent sees nonzero
+    // latency simultaneously with demand_active=0.
+    for (uint8_t s = 0; s < kSliceCount; ++s)
+    {
+        if (m_thrMbps[s] <= 0.001)
+        {
+            m_latMs[s] = 0.0;
+        }
+    }
+
 
     // Build normalised observation vector.
     //
@@ -598,9 +669,13 @@ NrSliceGymEnv::ScheduleStep()
     // obs[3:6]   throughput — normalised by per-slice maxThrMbps
     // obs[6:9]   latency    — normalised by 2×maxLatMs (SLA boundary at 0.5)
     // obs[9:12]  hol_delay  — HOL delay normalised by maxLatMs (forward-looking)
-    // obs[12:15] sla_headroom — (thr − minThr) / (maxThr − minThr), clipped to [0, 1].
-    //                            0.0 = at or below SLA floor   (thr ≤ minThr)
-    //                            1.0 = at capacity ceiling     (thr = maxThr)
+    // obs[12:15] prb_efficiency — (thr/maxThr) / (prb/totalPrbs) / 5.0, clipped to [0, 1].
+    //                             0.0 = no throughput per PRB (silent or starved).
+    //                             0.5 = SLA-level throughput at fair PRB share.
+    //                             1.0 = full throughput at minimum PRB allocation.
+    //                             Orthogonal to obs[0:3] and obs[3:6] individually.
+
+
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         m_observation[s]      = Clamp01(static_cast<double>(m_prbAlloc[s]) /
@@ -608,11 +683,38 @@ NrSliceGymEnv::ScheduleStep()
         m_observation[3 + s]  = Clamp01(m_thrMbps[s] / m_cfg.maxThrMbps[s]);
         m_observation[6 + s]  = Clamp01(m_latMs[s] / (2.0 * m_cfg.maxLatMs[s]));
         m_observation[9 + s]  = m_holNorm[s];
-        m_observation[12 + s] = Clamp01(
-        (m_thrMbps[s] - m_cfg.minThrMbps[s]) /
-        std::max(1e-9, m_cfg.maxThrMbps[s] - m_cfg.minThrMbps[s]));
+        {
+            const double prbFracSafe = static_cast<double>(m_prbAlloc[s]) /
+                                       static_cast<double>(m_cfg.totalPrbs);
+            const double thrNormVal  = m_thrMbps[s] /
+                                       std::max(1e-9, m_cfg.maxThrMbps[s]);
+            const double eff         = thrNormVal / std::max(1e-9, prbFracSafe);
+            m_observation[12 + s]   = Clamp01(eff / 5.0);
+        }
         // used to be "m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) / m_cfg.maxUes[s]);"
     }
+    // #region agent log
+    DebugLog("baseline",
+             "H2",
+             "slice-env.cc:ScheduleStep:obs",
+             "Observation vector after normalization",
+             "{\"step\":" + std::to_string(m_stepCount) +
+                 ",\"obs\":[" + std::to_string(m_observation[0]) + "," +
+                 std::to_string(m_observation[1]) + "," + std::to_string(m_observation[2]) +
+                 "," + std::to_string(m_observation[3]) + "," +
+                 std::to_string(m_observation[4]) + "," + std::to_string(m_observation[5]) +
+                 "," + std::to_string(m_observation[6]) + "," +
+                 std::to_string(m_observation[7]) + "," + std::to_string(m_observation[8]) +
+                 "," + std::to_string(m_observation[9]) + "," +
+                 std::to_string(m_observation[10]) + "," +
+                 std::to_string(m_observation[11]) + "," +
+                 std::to_string(m_observation[12]) + "," +
+                 std::to_string(m_observation[13]) + "," +
+                 std::to_string(m_observation[14]) + "," +
+                 std::to_string(m_observation[15]) + "," +
+                 std::to_string(m_observation[16]) + "," +
+                 std::to_string(m_observation[17]) + "]}");
+    // #endregion
 
     // -----------------------------------------------------------------------
     // Reward Function v2: throughput utility + continuous SLA margin +
@@ -621,8 +723,7 @@ NrSliceGymEnv::ScheduleStep()
     double   thrNormAvg    = 0.0;
     double   slaMarginAvg  = 0.0;
     uint32_t slaViolations = 0;
-    double   esum          = 0.0;
-    double   esum2         = 0.0;
+    double   effScore      = 0.0;
     uint32_t activeSlices  = 0;
 
     m_servedDemandRatio.fill(0.0);
@@ -648,11 +749,11 @@ NrSliceGymEnv::ScheduleStep()
             (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
             (m_latMs[s]   <= m_cfg.maxLatMs[s]);
 
-        const double thrMargin = std::tanh(std::max(0.0,                                     // thrMargin, latMargin now ∈ [0,1) — no overlap with violationRate penalty
+        const double thrMargin = std::tanh(std::max(0.0,                                             // thrMargin, latMargin now ∈ [0,1) — no overlap with violationRate penalty
             (m_thrMbps[s] - m_cfg.minThrMbps[s]) / std::max(1e-9, m_cfg.minThrMbps[s])));            //    std::max(1e-9, m_cfg.minThrMbps[s]));
         const double latMargin = std::tanh(std::max(0.0,                                             //  const double latMargin = std::tanh((m_cfg.maxLatMs[s] - m_latMs[s]) /
-            (m_cfg.maxLatMs[s] - m_latMs[s]) / std::max(1e-9, m_cfg.maxLatMs[s])));                  //     std::max(1e-9, m_cfg.maxLatMs[s]));
-
+            (2.0 * m_cfg.maxLatMs[s] - m_latMs[s]) / std::max(1e-9, 2.0 * m_cfg.maxLatMs[s])));                  //     std::max(1e-9, m_cfg.maxLatMs[s]));
+                
         
         slaViolations += slaSat ? 0 : 1;
 
@@ -660,8 +761,10 @@ NrSliceGymEnv::ScheduleStep()
         thrNormAvg   += thrNormSoft;
         slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
         const double eff = thrNormSoft / std::max(1e-9, prbFrac);
-        esum  += eff;
-        esum2 += eff * eff;
+        // eff / 25.0: normalised by theoretical maximum (full thr on 1 PRB).
+        // std::min cap prevents a single over-efficient slice from dominating
+        // the average when n > 1.
+        effScore += std::min(1.0, eff / 25.0);
         ++activeSlices;
 
         m_servedDemandRatio[s] = std::min(2.0, m_thrMbps[s] / std::max(1e-9, m_cfg.minThrMbps[s]));
@@ -682,17 +785,38 @@ NrSliceGymEnv::ScheduleStep()
         slaMarginAvg            /= n;
         // Also update slaMarginNorm since it no longer goes below 0:
         const double slaMarginNorm = slaMarginAvg ;  // already in [0,1) — no +1 offset needed
-        const double effJain       = (esum2 > 0.0)
-        ? ((esum * esum) / (static_cast<double>(n) * esum2))
-        : 1.0;
+        // effNorm: mean per-slice PRB efficiency, normalised to [0, 1].
+        // Has gradient for any activeSlices >= 1, unlike Jain which
+        // degenerates to 1.0 when n = 1 regardless of actual efficiency.
+        const double effNorm       = effScore / static_cast<double>(n);
+
         const double violationRate = static_cast<double>(slaViolations) /
                                  static_cast<double>(n);
 
+        // Weights adjusted so each term contributes its stated fraction
+        // of the achievable maximum, accounting for tanh saturation:
+        //   thrNormAvg  max = tanh(1.0) = 0.762  → w=0.451 → 40% of peak
+        //   slaMarginNorm max = 0.881             → w=0.292 → 30% of peak
+        //   effNorm     max = 1.000               → w=0.257 → 30% of peak
         m_reward = static_cast<float>(
-        0.40 * thrNormAvg    +
-        0.30 * slaMarginNorm +   // range [0,1), not [0,1] normalized
-        0.30 * effJain       -
-        1.20 * violationRate);
+        0.451 * thrNormAvg    +
+        0.292 * slaMarginNorm +
+        0.257 * effNorm       -
+        1.20  * violationRate);
+        // #region agent log
+        DebugLog("baseline",
+                 "H3",
+                 "slice-env.cc:ScheduleStep:reward",
+                 "Reward decomposition terms",
+                 "{\"step\":" + std::to_string(m_stepCount) +
+                     ",\"activeSlices\":" + std::to_string(activeSlices) +
+                     ",\"thrNormAvg\":" + std::to_string(thrNormAvg) +
+                     ",\"slaMarginNorm\":" + std::to_string(slaMarginNorm) +
+                     ",\"effNorm\":" + std::to_string(effNorm) +
+                     ",\"slaViolations\":" + std::to_string(slaViolations) +
+                     ",\"violationRate\":" + std::to_string(violationRate) +
+                     ",\"reward\":" + std::to_string(m_reward) + "}");
+        // #endregion
     }
 
             m_extraInfo = "{"
@@ -706,6 +830,18 @@ NrSliceGymEnv::ScheduleStep()
 
     for (uint8_t s = 0; s < kSliceCount; ++s) //added for the binary flags (each slice has a flag to tell if its on or off)
     m_observation[15 + s] = static_cast<float>(m_demandActive[s]);
+    // #region agent log
+    DebugLog("baseline",
+             "H5",
+             "slice-env.cc:ScheduleStep:extraInfo",
+             "Cross-layer payload and demand flags",
+             "{\"step\":" + std::to_string(m_stepCount) +
+                 ",\"demandActive\":[" + std::to_string(m_demandActive[0]) + "," +
+                 std::to_string(m_demandActive[1]) + "," + std::to_string(m_demandActive[2]) +
+                 "],\"servedDemandRatio\":[" + std::to_string(m_servedDemandRatio[0]) + "," +
+                 std::to_string(m_servedDemandRatio[1]) + "," +
+                 std::to_string(m_servedDemandRatio[2]) + "]}");
+    // #endregion
 
     m_gameOver = Simulator::Now() >= m_cfg.simTime;
 
