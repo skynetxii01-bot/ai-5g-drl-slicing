@@ -1,6 +1,6 @@
 """Gym 0.26.2 wrapper for the NS-3 5G slice RL environment.
 
-Observation layout (15 floats, all normalised to [0, 1]):
+Observation layout (18 floats, all normalised to [0, 1]):
     [0:3]   prb_frac      — fraction of totalPrbs allocated to each slice
     [3:6]   throughput    — normalised by per-slice maxThrMbps
     [6:9]   latency       — normalised by 2 × per-slice maxLatMs
