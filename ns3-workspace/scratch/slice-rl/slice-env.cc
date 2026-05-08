@@ -224,18 +224,16 @@ NrSliceGymEnv::OnSchedulerNotify(
     m_extraInfo          = extraInfo;
     m_updateWeightsFn    = updateWeightsFn;
 
-    TryBuildRntiSliceMap();TryBuildRntiSliceMap();
+    TryBuildRntiSliceMap();             // P2-2 fixed: single call, For some reason it was called twice here, TWICE !!!
     if (!m_rntiMapReady)
     {
         NS_LOG_WARN("OnSchedulerNotify: RNTI map not ready — dropping "
                     << observations.size() << " HOL observations this callback.");
     }
-    if (m_rntiMapReady)
+
+    if (m_rntiMapReady)      
     {
-        for (const auto& obs : observations)
-        if (m_rntiMapReady)
-    {
-        for ( const auto & obs : observations)
+        for ( const auto & obs : observations)       // P0-1 fixed: single loop, O(N), it used to be 2 loops the outer one over shadows the inner one 
  
         {
             auto it = m_rntiToSlice. find (obs.rnti);
@@ -473,17 +471,12 @@ NrSliceGymEnv::ApplySliceWeights()
 // the normalised result. To activate:
 //
 //   NS_LOG=NrSliceGymEnv=info ./run_simulation_copy2.sh dqn --episodes 1
-//
-// Expected values (unit assumed = milliseconds):
+//   holDelay is in ms CONFIERMED MULTIPLY TIMES
+//   Expected values (unit  = milliseconds):
 //   URLLC active period: holDelay in range [1, 15] ms  → holNorm in [0.07, 1.0]
 //   URLLC silent period: no observations arrive         → sample-and-hold
 //   eMBB active period:  holDelay in range [1, 50] ms  → holNorm in [0.02, 1.0]
 //
-// If you observe values like holDelay=500 or holDelay=2000 for URLLC during
-// active periods, the unit is NOT milliseconds. In that case, investigate
-// m_rlcTransmissionQueueHolDelay in NrMacSchedulerLC to determine the actual
-// unit (subframes, slots, or microseconds) and add the appropriate conversion
-// factor before dividing by m_cfg.maxLatMs[s].
 // ---------------------------------------------------------------------------
 
 void
@@ -767,7 +760,7 @@ NrSliceGymEnv::ScheduleStep()
         const double thrMargin = std::tanh(std::max(0.0,                                             // thrMargin, latMargin now ∈ [0,1) — no overlap with violationRate penalty
             (m_thrMbps[s] - m_cfg.minThrMbps[s]) / std::max(1e-9, m_cfg.minThrMbps[s])));            //    std::max(1e-9, m_cfg.minThrMbps[s]));
         const double latMargin = std::tanh(std::max(0.0,                                             //  const double latMargin = std::tanh((m_cfg.maxLatMs[s] - m_latMs[s]) /
-            (2.0 * m_cfg.maxLatMs[s] - m_latMs[s]) / std::max(1e-9, 2.0 * m_cfg.maxLatMs[s])));                  //     std::max(1e-9, m_cfg.maxLatMs[s]));
+            ( m_cfg.maxLatMs[s] - m_latMs[s]) / std::max(1e-9, m_cfg.maxLatMs[s])));                  //     std::max(1e-9, m_cfg.maxLatMs[s]));
                 
         
         slaViolations += slaSat ? 0 : 1;
@@ -784,7 +777,11 @@ NrSliceGymEnv::ScheduleStep()
 
         m_servedDemandRatio[s] = std::min(2.0, m_thrMbps[s] / std::max(1e-9, m_cfg.minThrMbps[s]));
     }
-
+        // Promoted to outer scope so m_extraInfo can reference them below.
+        // Defaults to 0.0 cover the activeSlices==0 case cleanly.
+        double slaMarginNorm = 0.0;
+        double effNorm       = 0.0;
+        double violationRate = 0.0;
     
 
         if (activeSlices == 0)
@@ -799,13 +796,13 @@ NrSliceGymEnv::ScheduleStep()
         thrNormAvg              /= n;
         slaMarginAvg            /= n;
         // Also update slaMarginNorm since it no longer goes below 0:
-        const double slaMarginNorm = slaMarginAvg ;  // already in [0,1) — no +1 offset needed
+        slaMarginNorm = slaMarginAvg ;  // already in [0,1) — no +1 offset needed         <--   // assign, not declare
         // effNorm: mean per-slice PRB efficiency, normalised to [0, 1].
         // Has gradient for any activeSlices >= 1, unlike Jain which
         // degenerates to 1.0 when n = 1 regardless of actual efficiency.
-        const double effNorm       = effScore / static_cast<double>(n);
+        effNorm       = effScore / static_cast<double>(n);                               // <-- // assign, not declare
 
-        const double violationRate = static_cast<double>(slaViolations) /
+        violationRate = static_cast<double>(slaViolations) /                             //<-- // assign, not declare
                                  static_cast<double>(n);
 
         // Weights adjusted so each term contributes its stated fraction
@@ -834,13 +831,43 @@ NrSliceGymEnv::ScheduleStep()
         // #endregion
     }
 
-            m_extraInfo = "{"
-        "\"demand_active\":[" + std::to_string(m_demandActive[0]) + "," + std::to_string(m_demandActive[1]) + "," + std::to_string(m_demandActive[2]) + "],"
-        "\"served_demand_ratio\":[" + std::to_string(m_servedDemandRatio[0]) + "," + std::to_string(m_servedDemandRatio[1]) + "," + std::to_string(m_servedDemandRatio[2]) + "],"
-        "\"cfg\":{\"max_thr_mbps\":[" + std::to_string(m_cfg.maxThrMbps[0]) + "," + std::to_string(m_cfg.maxThrMbps[1]) + "," + std::to_string(m_cfg.maxThrMbps[2]) + "],"
-        "\"min_thr_mbps\":[" + std::to_string(m_cfg.minThrMbps[0]) + "," + std::to_string(m_cfg.minThrMbps[1]) + "," + std::to_string(m_cfg.minThrMbps[2]) + "],"
-        "\"max_lat_ms\":[" + std::to_string(m_cfg.maxLatMs[0]) + "," + std::to_string(m_cfg.maxLatMs[1]) + "," + std::to_string(m_cfg.maxLatMs[2]) + "]}}";
-
+             m_extraInfo =
+        std::string("{") +
+        // ── demand / traffic state ──────────────────────────────────
+        "\"demand_active\":["        + std::to_string(m_demandActive[0])      + "," +
+                                       std::to_string(m_demandActive[1])      + "," +
+                                       std::to_string(m_demandActive[2])      + "]," +
+        "\"served_demand_ratio\":["  + std::to_string(m_servedDemandRatio[0]) + "," +
+                                       std::to_string(m_servedDemandRatio[1]) + "," +
+                                       std::to_string(m_servedDemandRatio[2]) + "]," +
+        // ── raw per-slice metrics (physical units) ──────────────────
+        "\"lat_ms\":["               + std::to_string(m_latMs[0])             + "," +
+                                       std::to_string(m_latMs[1])             + "," +
+                                       std::to_string(m_latMs[2])             + "]," +
+        "\"hol_norm\":["             + std::to_string(m_holNorm[0])           + "," +
+                                       std::to_string(m_holNorm[1])           + "," +
+                                       std::to_string(m_holNorm[2])           + "]," +
+        // ── reward decomposition terms ──────────────────────────────
+        "\"reward_terms\":{"                                                          +
+            "\"thr_norm_avg\":"      + std::to_string(thrNormAvg)             + "," +
+            "\"sla_margin_norm\":"   + std::to_string(slaMarginNorm)          + "," +
+            "\"eff_norm\":"          + std::to_string(effNorm)                + "," +
+            "\"violation_rate\":"    + std::to_string(violationRate)          + "," +
+            "\"active_slices\":"     + std::to_string(activeSlices)           +
+        "}," +
+        // ── static sim config (sent every step for Python cross-check) ─
+        "\"cfg\":{"                                                                    +
+            "\"max_thr_mbps\":["     + std::to_string(m_cfg.maxThrMbps[0])    + "," +
+                                       std::to_string(m_cfg.maxThrMbps[1])    + "," +
+                                       std::to_string(m_cfg.maxThrMbps[2])    + "]," +
+            "\"min_thr_mbps\":["     + std::to_string(m_cfg.minThrMbps[0])    + "," +
+                                       std::to_string(m_cfg.minThrMbps[1])    + "," +
+                                       std::to_string(m_cfg.minThrMbps[2])    + "]," +
+            "\"max_lat_ms\":["       + std::to_string(m_cfg.maxLatMs[0])      + "," +
+                                       std::to_string(m_cfg.maxLatMs[1])      + "," +
+                                       std::to_string(m_cfg.maxLatMs[2])      + "]"  +
+        "}"  +
+        "}";
     
 
     for (uint8_t s = 0; s < kSliceCount; ++s) //added for the binary flags (each slice has a flag to tell if its on or off)
