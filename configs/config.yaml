@@ -44,7 +44,7 @@ r2d2:
   lr: 0.0001
   gamma: 0.99
   batch_size: 32
-  seq_len: 40
+  seq_len: 80      # was 40 — P1-4 fix
   burn_in: 40
   n_step: 5
   per_alpha: 0.6
