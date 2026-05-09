@@ -49,6 +49,7 @@ MODEL_DIR = PROJECT_ROOT / "results" / "models"
 
 from agents.dqn.dqn_agent import DqnAgent, DqnConfig
 from envs.slice_gym_env import SLICE_NAMES, SliceGymEnv
+from envs.metrics import compute_sla_rates, nan_or_round
 from monitor import TrainingMonitor
 
 
@@ -65,64 +66,6 @@ def load_config(path: Path) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def compute_sla_rates(
-    decoded_obs: Dict,
-    cfg: Dict,
-    extra_json: Dict | None = None,
-) -> Dict[str, float]:
-    """Compute SLA satisfaction rates — overall and per slice.
-
-    Returns
-    -------
-    dict with keys:
-        "overall"  — fraction of active slices meeting SLA  (float in [0,1])
-        "embb"     — 1.0 / 0.0  (satisfied / violated or inactive)
-        "urllc"    — 1.0 / 0.0
-        "mmtc"     — 1.0 / 0.0
-
-    Inactive slices (demand_active == 0) are excluded from the denominator
-    of "overall" and reported as 1.0 individually (not a violation).
-
-    Latency boundary: obs[6:9] is normalised by 2*maxLatMs so SLA sits at
-    lat_norm = 0.5, not 1.0.
-
-    Must stay consistent with C++ slice-env.cc ScheduleStep reward logic
-    and with evaluate.py:compute_sla_rates.
-    """
-    max_thr = cfg["env"]["max_thr_mbps"]
-    min_thr = cfg["env"]["min_thr_mbps"]
-
-    demand_active = [1, 1, 1]
-    if (
-        extra_json
-        and isinstance(extra_json.get("demand_active"), list)
-        and len(extra_json["demand_active"]) == 3
-    ):
-        demand_active = [int(x) for x in extra_json["demand_active"]]
-
-    per_slice = []   # True = satisfied (or inactive), False = active violation
-    sat = 0
-    den = 0
-
-    for i, s in enumerate(SLICE_NAMES):
-        if demand_active[i] == 0:
-            per_slice.append(1.0)   # inactive = not a violation
-            continue
-        den += 1
-        thr      = float(decoded_obs["throughput"][s]) * float(max_thr[s])
-        lat_norm = float(decoded_obs["latency"][s])
-        ok = thr >= float(min_thr[s]) and lat_norm <= 0.5
-        per_slice.append(1.0 if ok else 0.0)
-        if ok:
-            sat += 1
-
-    overall = 1.0 if den == 0 else sat / den
-    return {
-        "overall": overall,
-        "embb":    per_slice[0],
-        "urllc":   per_slice[1],
-        "mmtc":    per_slice[2],
-    }
 
 
 def find_latest_checkpoint(model_dir: Path) -> Path | None:
@@ -146,11 +89,6 @@ def find_latest_checkpoint(model_dir: Path) -> Path | None:
     return checkpoints[-1] if checkpoints else None
 
 
-def _nan_or_round(v: float, decimals: int = 6) -> float | None:
-    """Round float, return None for NaN (JSON-safe)."""
-    if isinstance(v, float) and v != v:   # NaN check
-        return None
-    return round(float(v), decimals)
 
 
 def main() -> None:
@@ -544,9 +482,9 @@ def main() -> None:
                     "urllc_thr":   round(urllc_thr,    6),
                     "mmtc_thr":    round(mmtc_thr,     6),
                     # latency (ms) — None when slice inactive all episode
-                    "embb_lat":    _nan_or_round(embb_lat),
-                    "urllc_lat":   _nan_or_round(urllc_lat),
-                    "mmtc_lat":    _nan_or_round(mmtc_lat),
+                    "embb_lat":    nan_or_round(embb_lat),
+                    "urllc_lat":   nan_or_round(urllc_lat),
+                    "mmtc_lat":    nan_or_round(mmtc_lat),
                     # HOL delay normalised [0,1]
                     "hol_embb":    round(hol_embb,     6),
                     "hol_urllc":   round(hol_urllc,    6),
