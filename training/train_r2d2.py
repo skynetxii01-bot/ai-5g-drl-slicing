@@ -131,7 +131,7 @@ def main() -> None:
         batch_size     = int(  r2d2_raw.get("batch_size",     32)),
         seq_len        = int(  r2d2_raw.get("seq_len",        80)),   # P1-4 fix: was 40
         burn_in        = int(  r2d2_raw.get("burn_in",        40)),
-        n_step         = int(  r2d2_raw.get("n_step",         5)),
+        
         per_alpha      = float(r2d2_raw.get("per_alpha",      0.6)),
         per_beta_start = float(r2d2_raw.get("per_beta_start", 0.4)),
         per_beta_end   = float(r2d2_raw.get("per_beta_end",   1.0)),
