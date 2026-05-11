@@ -276,7 +276,8 @@ def main() -> None:
 
                 # End-of-episode update (remaining buffer)
                 if len(agent.buffer) > 0:
-                    upd = agent.update(last_value=0.0)
+                    _, _, lv = agent.act(obs)
+                    upd = agent.update(last_value=lv if not sim_done else 0.0)
                     if upd.get("loss", 0.0) > 0.0:
                         ep_losses.append(upd["loss"])
 
