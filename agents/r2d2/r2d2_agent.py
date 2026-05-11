@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import optim
 
-from agents.r2d2.per_buffer import PrioritizedReplay
+from agents.r2d2.per_buffer import PrioritizedReplayBuffer
 from agents.r2d2.r2d2_network import R2D2Net
 
 
@@ -24,7 +24,7 @@ class R2D2Config:
     batch_size:    int   = 32
     seq_len:       int   = 80    # total sequence stored (gradient window = seq_len - burn_in)
     burn_in:       int   = 40    # LSTM warm-up steps — no gradient here
-    n_step:        int   = 5
+    
     per_alpha:     float = 0.6
     per_beta_start:float = 0.4
     per_beta_end:  float = 1.0
@@ -44,7 +44,7 @@ class R2D2Agent:
         self.target.eval()
 
         self.optim  = optim.Adam(self.online.parameters(), lr=cfg.lr)
-        self.buffer = PrioritizedReplay(cfg.buffer_size, alpha=cfg.per_alpha)
+        self.buffer = PrioritizedReplayBuffer(cfg.buffer_size, alpha=cfg.per_alpha)
 
         self.train_steps = 0
 
