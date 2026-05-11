@@ -1,28 +1,51 @@
+"""Simple Prioritized Experience Replay for sequence samples."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import numpy as np
 
 
-class PrioritizedReplay:
-    def __init__(self, capacity=100000, alpha=0.6):
-        self.capacity, self.alpha = capacity, alpha
-        self.buf, self.pri, self.pos = [], [], 0
+@dataclass
+class SequenceTransition:
+    obs: np.ndarray
+    action: np.ndarray
+    reward: np.ndarray
+    done: np.ndarray
+    next_obs: np.ndarray
 
-    def add(self, item, priority=1.0):
-        if len(self.buf) < self.capacity:
-            self.buf.append(item); self.pri.append(priority)
-        else:
-            self.buf[self.pos] = item; self.pri[self.pos] = priority; self.pos = (self.pos + 1) % self.capacity
 
-    def sample(self, batch_size=32, beta=0.4):
-        p = np.array(self.pri, dtype=np.float32) ** self.alpha
-        p /= p.sum()
-        idx = np.random.choice(len(self.buf), batch_size, p=p)
-        w = (len(self.buf) * p[idx]) ** (-beta)
-        w /= w.max()
-        return [self.buf[i] for i in idx], idx, w
-
-    def update(self, idx, td):
-        for i, t in zip(idx, td):
-            self.pri[i] = float(abs(t) + 1e-6)
+class PrioritizedReplayBuffer:
+    def __init__(self, capacity: int = 100_000, alpha: float = 0.6) -> None:
+        self.capacity = int(capacity)
+        self.alpha = float(alpha)
+        self.data = []
+        self.priorities = np.zeros(self.capacity, dtype=np.float32)
+        self.pos = 0
 
     def __len__(self):
-        return len(self.buf)
+        return len(self.data)
+
+    def add(self, item: SequenceTransition, priority: float = 1.0):
+        p = max(1e-6, float(priority))
+        if len(self.data) < self.capacity:
+            self.data.append(item)
+        else:
+            self.data[self.pos] = item
+        self.priorities[self.pos] = p
+        self.pos = (self.pos + 1) % self.capacity
+
+    def sample(self, batch_size: int, beta: float = 0.4):
+        n = len(self.data)
+        prios = self.priorities[:n] ** self.alpha
+        probs = prios / prios.sum()
+        idx = np.random.choice(n, batch_size, p=probs)
+        samples = [self.data[i] for i in idx]
+        weights = (n * probs[idx]) ** (-beta)
+        weights /= weights.max()
+        return idx, samples, weights.astype(np.float32)
+
+    def update_priorities(self, indices, priorities):
+        for i, p in zip(indices, priorities):
+            self.priorities[int(i)] = max(1e-6, float(p))
