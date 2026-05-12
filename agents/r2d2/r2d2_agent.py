@@ -91,7 +91,7 @@ class R2D2Agent:
             / 50_000,
         )
 
-        seqs, idx, weights = self.buffer.sample(self.cfg.batch_size, beta=beta)
+        idx, seqs, weights = self.buffer.sample(self.cfg.batch_size, beta=beta)
 
         # Stack into tensors — shape (batch, seq_len, ...)
         obs_t  = torch.tensor(np.stack([s["obs"]      for s in seqs]),
@@ -141,7 +141,7 @@ class R2D2Agent:
 
         # Update PER priorities with mean |TD error| per sequence
         td_mean = td.abs().mean(dim=1).detach().cpu().numpy()
-        self.buffer.update(idx, td_mean)
+        self.buffer.update_priorities(idx, td_mean)
 
         return {"loss": float(loss.item())}
 
