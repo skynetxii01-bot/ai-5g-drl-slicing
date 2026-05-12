@@ -11,7 +11,9 @@ Observation layout (18 floats, all normalised to [0, 1]):
                             Forward-looking congestion proxy: rises before
                             packets are dropped. Sample-and-hold when no
                             fresh scheduler callback fires in the 100ms window.
-    [12:15] prb_efficiency — (thr/maxThr) / (prb/totalPrbs) / 5.0, clipped to [0, 1].
+    [12:15] prb_efficiency — tanh(thr/maxThr) / (prb/totalPrbs) / 25.0, clipped to [0, 1].
+                            Matches the effNorm term in the C++ reward function exactly.
+                            Range: [0, ~0.76] — never saturates under normal operating conditions..
                              0.0 = no throughput per PRB (silent or starved slice).
                              0.5 = SLA-level throughput at fair PRB share.
                              1.0 = full throughput at minimum PRB allocation.
@@ -52,6 +54,10 @@ except ImportError as e:
 SLICE_NAMES = ("eMBB", "URLLC", "mMTC")
 OBS_SIZE = 18 
 ACTION_SIZE = 27
+
+_PRB_TOTAL = 25
+_PRB_MAX   = 13   # any slice ≥ 14 PRBs triggers PHY assertion in nr-gnb-phy.cc:1010
+_PRB_MIN   =  1   # never starve a slice entirely
 
 # #region agent log
 def debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
@@ -94,6 +100,7 @@ class SliceGymEnv(gym.Env):
         self.debug = bool(debug)
         self.start_sim = bool(start_sim)
         self.sim_args = sim_args or {}
+        self._last_obs = np.zeros(OBS_SIZE, dtype=np.float32)
 
         self.observation_space = spaces.Box(
             low=np.float32(0.0),
@@ -231,10 +238,37 @@ class SliceGymEnv(gym.Env):
             "obs_len": int(obs.shape[0]), "keys": list(info["decoded_obs"].keys())
         })
         # #endregion
+        self._last_obs = obs
         return obs, info
+    
+    def _safe_action(self, action: int) -> int:
+        """Clamp action so no slice crosses PRB bounds before sending to NS-3.
+
+        Prevents any slice reaching >= 14 PRBs, which triggers a PHY assertion
+        in nr-gnb-phy.cc line 1010 (scheduler declares full-slot 14-symbol grant
+        that the PHY stats loop cannot reconcile).
+        """
+        d_embb  = (action // 9) - 1
+        d_urllc = ((action % 9) // 3) - 1
+        d_mmtc  = (action % 3) - 1
+
+        cur_embb  = round(float(self._last_obs[0]) * _PRB_TOTAL)
+        cur_urllc = round(float(self._last_obs[1]) * _PRB_TOTAL)
+        cur_mmtc  = round(float(self._last_obs[2]) * _PRB_TOTAL)
+
+        if cur_embb  + d_embb  > _PRB_MAX: d_embb  = 0
+        if cur_urllc + d_urllc > _PRB_MAX: d_urllc = 0
+        if cur_mmtc  + d_mmtc  > _PRB_MAX: d_mmtc  = 0
+
+        if cur_embb  + d_embb  < _PRB_MIN: d_embb  = 0
+        if cur_urllc + d_urllc < _PRB_MIN: d_urllc = 0
+        if cur_mmtc  + d_mmtc  < _PRB_MIN: d_mmtc  = 0
+
+        return (d_embb + 1) * 9 + (d_urllc + 1) * 3 + (d_mmtc + 1)
+    
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        act = int(action)
+        act = self._safe_action(int(action))
         if act < 0 or act >= ACTION_SIZE:
             raise ValueError(f"Action must be in [0, {ACTION_SIZE - 1}], got {act}")
 
@@ -274,6 +308,9 @@ class SliceGymEnv(gym.Env):
                     "demand_active": info.get("demand_active"),
                     "served_demand_ratio": info.get("served_demand_ratio"),
                     "cfg": info.get("cfg"),
+                    "lat_ms":              info.get("lat_ms"),
+                    "hol_norm":            info.get("hol_norm"),
+                    "reward_terms":        info.get("reward_terms"),
                 }
                 if self._debug_raw_info_count <= 3:
                     # #region agent log
@@ -323,6 +360,7 @@ class SliceGymEnv(gym.Env):
             })
             # #endregion
 
+        self._last_obs = obs
         return obs, float(reward), bool(done), bool(truncated), info
 
     def render(self) -> None:
