@@ -54,7 +54,7 @@ Clamp01(double v)
     return static_cast<float>(std::max(0.0, std::min(1.0, v)));
 }
 
-// #region agent log
+// #region log
 inline void
 DebugLog(const std::string& runId,
          const std::string& hypothesisId,
@@ -693,11 +693,12 @@ NrSliceGymEnv::ScheduleStep()
         m_observation[9 + s]  = m_holNorm[s];
         {
             const double prbFracSafe = static_cast<double>(m_prbAlloc[s]) /
-                                       static_cast<double>(m_cfg.totalPrbs);
-            const double thrNormVal  = m_thrMbps[s] /
-                                       std::max(1e-9, m_cfg.maxThrMbps[s]);
-            const double eff         = thrNormVal / std::max(1e-9, prbFracSafe);
-            m_observation[12 + s]   = Clamp01(eff / 5.0);
+                               static_cast<double>(m_cfg.totalPrbs);
+            const double thrNorm     = m_thrMbps[s] /
+                               std::max(1e-9, m_cfg.maxThrMbps[s]);
+            const double thrNormSoft = std::tanh(std::max(0.0, thrNorm));   // matches reward
+            const double eff         = thrNormSoft / std::max(1e-9, prbFracSafe);
+            m_observation[12 + s]   = Clamp01(eff / 25.0);    // matches reward
         }
         // used to be "m_observation[12 + s] = Clamp01(static_cast<double>(m_uesPerSlice[s]) / m_cfg.maxUes[s]);"
     }
@@ -731,7 +732,7 @@ NrSliceGymEnv::ScheduleStep()
     double   thrNormAvg    = 0.0;
     double   slaMarginAvg  = 0.0;
     uint32_t slaViolations = 0;
-    double   effScore      = 0.0;
+    double   totalThrMbps  = 0.0;   // sum of active-slice thr for demand_frac
     uint32_t activeSlices  = 0;
 
     m_servedDemandRatio.fill(0.0);
@@ -741,9 +742,6 @@ NrSliceGymEnv::ScheduleStep()
     for (uint8_t s = 0; s < kSliceCount; ++s)
     {
         const double thrNorm = m_thrMbps[s] / std::max(1e-9, m_cfg.maxThrMbps[s]);
-        const double prbFrac =
-            static_cast<double>(m_prbAlloc[s]) /
-            static_cast<double>(m_cfg.totalPrbs);
         const bool demandActive = (m_thrMbps[s] > 0.001);
 
         m_demandActive[s] = demandActive ? 1 : 0;
@@ -757,22 +755,17 @@ NrSliceGymEnv::ScheduleStep()
             (m_thrMbps[s] >= m_cfg.minThrMbps[s]) &&
             (m_latMs[s]   <= m_cfg.maxLatMs[s]);
 
-        const double thrMargin = std::tanh(std::max(0.0,                                             // thrMargin, latMargin now ∈ [0,1) — no overlap with violationRate penalty
-            (m_thrMbps[s] - m_cfg.minThrMbps[s]) / std::max(1e-9, m_cfg.minThrMbps[s])));            //    std::max(1e-9, m_cfg.minThrMbps[s]));
-        const double latMargin = std::tanh(std::max(0.0,                                             //  const double latMargin = std::tanh((m_cfg.maxLatMs[s] - m_latMs[s]) /
-            ( m_cfg.maxLatMs[s] - m_latMs[s]) / std::max(1e-9, m_cfg.maxLatMs[s])));                  //     std::max(1e-9, m_cfg.maxLatMs[s]));
-                
-        
+        const double thrMargin = std::tanh(std::max(0.0,
+            (m_thrMbps[s] - m_cfg.minThrMbps[s]) / std::max(1e-9, m_cfg.minThrMbps[s])));
+        const double latMargin = std::tanh(std::max(0.0,
+            ( m_cfg.maxLatMs[s] - m_latMs[s]) / std::max(1e-9, m_cfg.maxLatMs[s])));
+
         slaViolations += slaSat ? 0 : 1;
 
         const double thrNormSoft = std::tanh(std::max(0.0, thrNorm));
         thrNormAvg   += thrNormSoft;
         slaMarginAvg += 0.5 * thrMargin + 0.5 * latMargin;
-        const double eff = thrNormSoft / std::max(1e-9, prbFrac);
-        // eff / 25.0: normalised by theoretical maximum (full thr on 1 PRB).
-        // std::min cap prevents a single over-efficient slice from dominating
-        // the average when n > 1.
-        effScore += std::min(1.0, eff / 25.0);
+        totalThrMbps += m_thrMbps[s];
         ++activeSlices;
 
         m_servedDemandRatio[s] = std::min(2.0, m_thrMbps[s] / std::max(1e-9, m_cfg.minThrMbps[s]));
@@ -797,10 +790,29 @@ NrSliceGymEnv::ScheduleStep()
         slaMarginAvg            /= n;
         // Also update slaMarginNorm since it no longer goes below 0:
         slaMarginNorm = slaMarginAvg ;  // already in [0,1) — no +1 offset needed         <--   // assign, not declare
-        // effNorm: mean per-slice PRB efficiency, normalised to [0, 1].
-        // Has gradient for any activeSlices >= 1, unlike Jain which
-        // degenerates to 1.0 when n = 1 regardless of actual efficiency.
-        effNorm       = effScore / static_cast<double>(n);                               // <-- // assign, not declare
+        
+        // alignNorm: PRB-demand alignment — does the PRB share match the
+        // traffic demand share?
+        //   demand_frac[s] = thr[s] / sum(thr)       — observed demand share
+        //   alignment[s]   = 1 - |prb_frac[s] - demand_frac[s]|   — 1.0=perfect
+        //
+        // Unlike old effNorm, does NOT reward starvation:
+        // slack-capacity throughput at 1 PRB raises demand_frac while
+        // prb_frac stays near zero → large mismatch → low score.
+        if (totalThrMbps > 1e-9)
+        {
+            double alignScore = 0.0;
+            for (uint8_t s = 0; s < kSliceCount; ++s)
+            {
+                if (m_demandActive[s] == 0) { continue; }
+                const double demandFrac = m_thrMbps[s] / totalThrMbps;
+                const double prbFracS   = static_cast<double>(m_prbAlloc[s]) /
+                                          static_cast<double>(m_cfg.totalPrbs);
+                alignScore += 1.0 - std::abs(prbFracS - demandFrac);
+            }
+            effNorm = alignScore / static_cast<double>(n);
+        }
+        // else: effNorm stays 0.0 (totalThrMbps==0 with activeSlices>0 is degenerate)
 
         violationRate = static_cast<double>(slaViolations) /                             //<-- // assign, not declare
                                  static_cast<double>(n);
