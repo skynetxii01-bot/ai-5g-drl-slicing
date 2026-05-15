@@ -212,13 +212,13 @@ main(int argc, char* argv[])
 
     // ── Topology constants — identical to slice-rl-sim.cc ──────────────────
     constexpr uint32_t gnbCount         = 1;
-    constexpr uint32_t embbUes          = 10;
-    constexpr uint32_t urllcUes         = 5;
-    constexpr uint32_t mmtcUes          = 20;
+    constexpr uint32_t embbUes          = 20;
+    constexpr uint32_t urllcUes         = 15;
+    constexpr uint32_t mmtcUes          = 40;
     constexpr uint8_t  numerology       = 1;
     constexpr double   centralFrequency = 3.5e9;
     constexpr double   bandwidth        = 20e6;
-    constexpr uint16_t totalPrbs        = 25;
+    constexpr uint16_t totalPrbs        = 51;
 
     const Time appStart = Seconds(0.2);
     const Time appStop  = Seconds(simTimeSeconds - 0.05);
@@ -362,7 +362,7 @@ main(int argc, char* argv[])
     // ── Traffic — identical to slice-rl-sim.cc ───────────────────────────
     // eMBB: video-like.  10 Mbps peak, on~2s, off~1s → avg ≈ 6.6 Mbps/UE
     InstallOnOffTraffic(remoteHost, embbNodes, embbIfaces,
-                        1000, 1448, DataRate("10Mbps"),
+                        1000, 1448, DataRate("12Mbps"),
                         2.0, 1.0, appStart, appStop);
 
     // URLLC: event-driven.  5 Mbps peak, on~50ms, off~200ms → avg ≈ 1 Mbps/UE
@@ -372,7 +372,7 @@ main(int argc, char* argv[])
 
     // mMTC: IoT duty cycle.  2 Mbps peak, on~1s, off~9s → avg ≈ 0.2 Mbps/UE
     InstallOnOffTraffic(remoteHost, mmtcNodes, mmtcIfaces,
-                        3000, 128, DataRate("2Mbps"),
+                        3000, 128, DataRate("1Mbps"),
                         1.0, 9.0, appStart, appStop);
 
     // ── Flow monitor ─────────────────────────────────────────────────────
@@ -386,11 +386,11 @@ main(int argc, char* argv[])
     cfg.totalPrbs       = totalPrbs;
     cfg.stepInterval    = MilliSeconds(100);
     cfg.simTime         = Seconds(simTimeSeconds);
-    cfg.initialPrbAlloc = {10, 8, 7};
-    cfg.maxUes          = {20, 10, 50};
-    cfg.maxThrMbps      = {100.0, 25.0, 8.0};
-    cfg.maxLatMs        = {50.0,  15.0, 500.0};
-    cfg.minThrMbps      = {10.0,  1.0,  0.1};
+    cfg.initialPrbAlloc = {25, 15, 11};
+    cfg.maxUes          = {30, 25, 60};
+    cfg.maxThrMbps      = {240.0, 75.0, 8.0};
+    cfg.maxLatMs        = {50.0,  10.0, 300.0};
+    cfg.minThrMbps      = {50.0,  2.0,  0.1};
 
     // ── Register policies ────────────────────────────────────────────────
     baselineEnv->AddPolicy("Random",      RandomPolicy);
