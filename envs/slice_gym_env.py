@@ -12,7 +12,8 @@ Observation layout (18 floats, all normalised to [0, 1]):
                             packets are dropped. Sample-and-hold when no
                             fresh scheduler callback fires in the 100ms window.
     [12:15] prb_efficiency — tanh(thr/maxThr) / (prb/totalPrbs) / 25.0, clipped to [0, 1].
-                            Matches the effNorm term in the C++ reward function exactly.
+                            Per-PRB efficiency signal for the agent. No longer matches the reward's
+                            effNorm term (which was replaced by PRB-demand alignment in v2.1)..
                             Range: [0, ~0.76] — never saturates under normal operating conditions..
                              0.0 = no throughput per PRB (silent or starved slice).
                              0.5 = SLA-level throughput at fair PRB share.
@@ -55,9 +56,9 @@ SLICE_NAMES = ("eMBB", "URLLC", "mMTC")
 OBS_SIZE = 18 
 ACTION_SIZE = 27
 
-_PRB_TOTAL = 25
-_PRB_MAX   = 13   # any slice ≥ 14 PRBs triggers PHY assertion in nr-gnb-phy.cc:1010
-_PRB_MIN   =  1   # never starve a slice entirely
+_PRB_TOTAL = 51
+_PRB_MAX   = 30    # conservative for smoke test — raise to 40 if no PHY assertion
+_PRB_MIN   =  1    # never starve a slice completely
 
 # #region agent log
 def debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
