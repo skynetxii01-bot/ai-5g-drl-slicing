@@ -437,30 +437,97 @@ NrSliceBaselineEnv::EnforceConstraints()
 void
 NrSliceBaselineEnv::ApplySliceWeights()
 {
-    if (!m_updateWeightsFn || m_lastLcObs.empty())
+    
+    if (!m_updateWeightsFn)
         return;
 
     TryBuildRntiSliceMap();
 
-    NrMacSchedulerUeInfoAi::UeWeightsMap weightsMap;
+    
+    // Persistent across callbacks, same as RL env implementation.
+    static NrMacSchedulerUeInfoAi::UeWeightsMap weightsMap;
 
+    
+    const double defaultWeight =
+        1.0 / static_cast<double>(std::max<uint32_t>(1, m_cfg.totalPrbs));
+
+        // Safety net for scheduler's ueWeights.at(rnti) access pattern:
+    // ensure every uint8_t RNTI key exists with non-zero LCID entries.
+    if (weightsMap.empty())
+
+    for (uint16_t r = 1; r <= std::numeric_limits<uint8_t>::max(); ++r)
+    {
+        {
+            auto& ueWeights = weightsMap[static_cast<uint8_t>(r)];
+            for (uint16_t lc = 1; lc <= std::numeric_limits<uint8_t>::max(); ++lc)
+            {
+                ueWeights[static_cast<uint8_t>(lc)] = static_cast<float>(defaultWeight);
+            }
+        }
+    }
+
+    // Phase 1: prepopulate all known UEs with common LCIDs so scheduler lookups
+    // never hit missing-weight assertions before traffic observations arrive.
+    for (const auto& [rnti16, slice] : m_rntiToSlice)
+    {
+
+        if (rnti16 > 255)
+        {
+            NS_LOG_ERROR("ApplySliceWeights: RNTI " << rnti16 << " > 255 — skipping.");
+            continue;
+        }
+
+
+        double weight = defaultWeight;
+        if (slice < kSliceCount)
+        {
+            const double sliceFrac =
+                static_cast<double>(m_prbAlloc[slice]) /
+                static_cast<double>(m_cfg.totalPrbs);
+            const double ueCount =
+                static_cast<double>(std::max<uint32_t>(1, m_uesPerSlice[slice]));
+            weight = sliceFrac / ueCount;
+        }
+
+        auto& ueWeights = weightsMap[static_cast<uint8_t>(rnti16)];
+     // LCID 0 intentionally excluded (control/signaling).
+    // Prepopulate full non-zero LCID space to avoid any out-of-range
+    // lookups in scheduler maps when active LCIDs exceed expected ranges.
+    for (uint16_t lc = 1; lc <= std::numeric_limits<uint8_t>::max(); ++lc)
+    {
+    ueWeights[static_cast<uint8_t>(lc)] = static_cast<float>(weight);
+    }
+    }
+
+    // Phase 2: refine using actually observed LC activity this callback.
     for (const auto& obs : m_lastLcObs)
     {
-        auto it = m_rntiToSlice.find(obs.rnti);
-        if (it == m_rntiToSlice.end() || it->second >= kSliceCount)
-            continue;
-
-        const uint8_t s = it->second;
-        const double weight =
-            (static_cast<double>(m_prbAlloc[s]) / m_cfg.totalPrbs) /
-            std::max(1.0, static_cast<double>(m_uesPerSlice[s]));
-
         if (obs.rnti > 255)
         {
             NS_LOG_ERROR("ApplySliceWeights: RNTI " << obs.rnti << " > 255 — skipping.");
             continue;
         }
-        weightsMap[static_cast<uint8_t>(obs.rnti)][obs.lcId] = weight;
+    
+
+        if (obs.lcId == 0)
+        {
+            continue;
+        }
+
+        auto& ueWeights = weightsMap[static_cast<uint8_t>(obs.rnti)];
+
+        auto it = m_rntiToSlice.find(obs.rnti);
+        if (it == m_rntiToSlice.end() || it->second >= kSliceCount)
+        {
+            ueWeights[obs.lcId] = static_cast<float>(defaultWeight);
+            continue;
+        }
+
+        const uint8_t s = it->second;
+        const double weight =
+            (static_cast<double>(m_prbAlloc[s]) / static_cast<double>(m_cfg.totalPrbs)) /
+            std::max(1.0, static_cast<double>(m_uesPerSlice[s]));
+        ueWeights[obs.lcId] = static_cast<float>(weight);
     }
 
     if (!weightsMap.empty())
@@ -839,7 +906,17 @@ NrSliceBaselineEnv::WriteResults() const
         const std::string& path = m_outputPath;
         const size_t       sl   = path.rfind('/');
         if (sl != std::string::npos)
-            ::system(("mkdir -p " + path.substr(0, sl)).c_str());
+        {
+            const int rc = ::system(("mkdir -p " + path.substr(0, sl)).c_str());
+            if (rc != 0)
+            {
+                std::cerr << "[NrSliceBaselineEnv] WARN: mkdir command failed with rc="
+                          << rc << " for path prefix " << path.substr(0, sl) << "\n";
+            }
+        }
+
+
+
     }
 
     std::ofstream f(m_outputPath);
