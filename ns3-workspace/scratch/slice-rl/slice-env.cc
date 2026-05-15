@@ -409,60 +409,146 @@ NrSliceGymEnv::ApplySliceWeights()
         return;
     }
 
-    if (m_lastLcObservations.empty())
-    {
-        return;
-    }
-
     TryBuildRntiSliceMap();
 
-    NrMacSchedulerUeInfoAi::UeWeightsMap weightsMap;
+    // Persistent across callbacks.
+    // Prevents scheduler from losing LC entries between updates.
+    static NrMacSchedulerUeInfoAi::UeWeightsMap weightsMap;
 
+    const double defaultWeight =
+        1.0 / static_cast<double>(
+            std::max<uint32_t>(1, m_cfg.totalPrbs));
+
+    //
+    // ----------------------------------------------------------------
+    // Phase 1:
+    // Prepopulate all known UEs with common LCIDs.
+    //
+    // This is REQUIRED because the AI scheduler may request
+    // LC weights before those LCs appear in observations.
+    //
+    // Without this, high UE counts can trigger:
+    //   "Weight not found for LC"
+    // in nr-mac-scheduler-ue-info-ai.h
+    // ----------------------------------------------------------------
+    //
+    for (const auto& [rnti16, slice] : m_rntiToSlice)
+    {
+        if (rnti16 > 255)
+        {
+            NS_LOG_ERROR(
+                "ApplySliceWeights: RNTI "
+                << rnti16
+                << " exceeds uint8_t range.");
+
+            continue;
+        }
+
+        double weight = defaultWeight;
+
+        if (slice < kSliceCount)
+        {
+            const double sliceFrac =
+                static_cast<double>(m_prbAlloc[slice]) /
+                static_cast<double>(m_cfg.totalPrbs);
+
+            const double ueCount =
+                static_cast<double>(
+                    std::max<uint32_t>(
+                        1,
+                        m_uesPerSlice[slice]));
+
+            weight = sliceFrac / ueCount;
+        }
+
+        auto& ueWeights =
+            weightsMap[static_cast<uint8_t>(rnti16)];
+
+        // Prepopulate common NR LCIDs.
+        // LCID 0 intentionally skipped (control/signaling).
+        for (uint8_t lc = 1; lc <= 4; ++lc)
+        {
+            ueWeights[lc] =
+                static_cast<float>(weight);
+        }
+    }
+
+    //
+    // ----------------------------------------------------------------
+    // Phase 2:
+    // Refine/update using actual observed LC activity.
+    // ----------------------------------------------------------------
+    //
     for (const auto& obs : m_lastLcObservations)
     {
         const uint16_t rnti16 = obs.rnti;
         const uint8_t  lcId   = obs.lcId;
 
+        // Skip control/signaling LC.
+        if (lcId == 0)
+        {
+            continue;
+        }
+
+        if (rnti16 > 255)
+        {
+            NS_LOG_ERROR(
+                "ApplySliceWeights: RNTI "
+                << rnti16
+                << " exceeds uint8_t range.");
+
+            continue;
+        }
+
+        auto& ueWeights =
+            weightsMap[static_cast<uint8_t>(rnti16)];
+
         auto it = m_rntiToSlice.find(rnti16);
+
         if (it == m_rntiToSlice.end())
         {
+            // UE still attaching.
+            ueWeights[lcId] =
+                static_cast<float>(defaultWeight);
+
             continue;
         }
 
         const uint8_t slice = it->second;
+
         if (slice >= kSliceCount)
         {
+            ueWeights[lcId] =
+                static_cast<float>(defaultWeight);
+
             continue;
         }
 
         const double sliceFrac =
-            static_cast<double>(m_prbAlloc[slice]) / m_cfg.totalPrbs;
+            static_cast<double>(m_prbAlloc[slice]) /
+            static_cast<double>(m_cfg.totalPrbs);
+
         const double ueCount =
-            static_cast<double>(std::max<uint32_t>(1, m_uesPerSlice[slice]));
-        const double weight = sliceFrac / ueCount;
+            static_cast<double>(
+                std::max<uint32_t>(
+                    1,
+                    m_uesPerSlice[slice]));
 
-        // UeWeightsMap uses uint8_t keys — a 5G-LENA API constraint.
-        // Guard against silent wrap-around if RNTI ever exceeds 255.
-        // With 35 UEs this never triggers, but the failure would be
-        // undetectable without this check.
-        if (rnti16 > 255)
-        {
-            NS_LOG_ERROR("ApplySliceWeights: RNTI " << rnti16
-                         << " exceeds uint8_t range — skipping UE to prevent "
-                         << "key collision in UeWeightsMap. This is a 5G-LENA "
-                         << "API limitation (UeWeightsMap outer key is uint8_t).");
-            continue;
-        }
+        const double weight =
+            sliceFrac / ueCount;
 
-        weightsMap[static_cast<uint8_t>(rnti16)][lcId] = weight;
+        ueWeights[lcId] =
+            static_cast<float>(weight);
     }
 
+    //
+    // Final scheduler update.
+    //
     if (!weightsMap.empty())
     {
         m_updateWeightsFn(weightsMap);
     }
 }
-
 // ---------------------------------------------------------------------------
 // AggregateHolDelay — fills m_holNorm[s] from MAC scheduler BSR observations.
 //
