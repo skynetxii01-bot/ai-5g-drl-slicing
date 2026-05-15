@@ -110,13 +110,13 @@ main(int argc, char* argv[])
     RngSeedManager::SetRun(seed);
 
     constexpr uint32_t gnbCount  = 1;
-    constexpr uint32_t embbUes   = 10;
-    constexpr uint32_t urllcUes  = 5;
-    constexpr uint32_t mmtcUes   = 20;
+    constexpr uint32_t embbUes  = 20;   // video streaming users
+    constexpr uint32_t urllcUes = 15;   // factory automation devices
+    constexpr uint32_t mmtcUes  = 40;   // IoT sensors
     constexpr uint8_t  numerology = 1;
     constexpr double   centralFrequency = 3.5e9;
     constexpr double   bandwidth        = 20e6;
-    constexpr uint16_t totalPrbs        = 25;
+    constexpr uint16_t totalPrbs = 51;   // 3GPP TS 38.101-1 Table 5.3.2-1: 20MHz + μ=1
 
     const Time appStart = Seconds(0.2);
     const Time appStop  = Seconds(simTimeSeconds - 0.05);
@@ -256,25 +256,26 @@ main(int argc, char* argv[])
         ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
     }
 
-    // eMBB: video-like bursts.  Peak=10Mbps, on~2s, off~1s → avg≈6.63 Mbps/UE
-    //       Duty cycle 67% — frequently above SLA threshold, creating real PRB pressure.
+    // eMBB: 5QI=8, video streaming. Peak=12Mbps, on~2s, off~0.3s → duty=87%
+    // Expected aggregate: 20 UEs × 12 Mbps × 0.87 = 208 Mbps → ~38 PRBs
     InstallOnOffTraffic(remoteHost, embbNodes, embbIfaces,
-                        1000, 1448, DataRate("10Mbps"),
-                        2.0 /*onMean s*/, 1.0 /*offMean s*/,
-                        appStart, appStop);
+                        1000, 1448, DataRate("12Mbps"),
+                         2.0, 0.3,
+                         appStart, appStop);
 
-    // URLLC: event-driven bursts.  Peak=5Mbps, on~50ms, off~200ms → avg≈1 Mbps/UE
-    //        Very short on-periods keep latency tight during bursts.
+    // URLLC: 5QI=83, factory automation. Peak=5Mbps, on~20ms, off~80ms → duty=20%
+    // packetSize 20→100 bytes: 20B at 5Mbps = 31250 pkt/s (pathological), 100B = 6250 pkt/s
+    // Expected aggregate: 15 UEs × 5 Mbps × 0.20 = 15 Mbps → ~5 PRBs avg, ~25 PRBs at burst
     InstallOnOffTraffic(remoteHost, urllcNodes, urllcIfaces,
-                        2000, 20, DataRate("5Mbps"),
-                        0.05 /*onMean s*/, 0.20 /*offMean s*/,
+                         2000, 100, DataRate("5Mbps"),
+                         0.02, 0.08,
                         appStart, appStop);
 
-    // mMTC: IoT sensor duty cycle.  Peak=2Mbps, on~1s, off~9s → avg≈0.2 Mbps/UE
-    //        Long sleep periods mean mMTC demand is sparse and variable.
+    // mMTC: NB-IoT, smart metering. Peak=1Mbps, on~0.5s, off~19.5s → duty=2.5%
+    // Expected aggregate: 40 UEs × 1 Mbps × 0.025 = 1 Mbps → background noise
     InstallOnOffTraffic(remoteHost, mmtcNodes, mmtcIfaces,
-                        3000, 128, DataRate("2Mbps"),
-                        1.0 /*onMean s*/, 9.0 /*offMean s*/,
+                        3000, 64, DataRate("1Mbps"),
+                        0.5, 19.5,
                         appStart, appStop);
 
     FlowMonitorHelper flowmonHelper;
@@ -283,14 +284,14 @@ main(int argc, char* argv[])
         DynamicCast<Ipv4FlowClassifier>(flowmonHelper.GetClassifier());
 
     NrSliceGymEnv::Config cfg;
-    cfg.totalPrbs    = totalPrbs;
+    cfg.totalPrbs       = totalPrbs;           // = 51
     cfg.stepInterval = MilliSeconds(100);
     cfg.simTime      = Seconds(simTimeSeconds);
-    cfg.initialPrbAlloc = {10, 8, 7};
+    cfg.initialPrbAlloc = {25, 15, 11}; // sums to 51, proportional starting point
 
     // P0-1 FIX: maxUes must be UPPER BOUNDS that EXCEED the simulated counts.
     // See slice-env.h Config for full rationale.
-    cfg.maxUes       = {20, 10, 50};   // FIX: was {embbUes, urllcUes, mmtcUes} = {10, 5, 20}
+    cfg.maxUes          = {30, 25, 60};   /// upper bounds > actual counts
 
     // -----------------------------------------------------------------------
     // P0-A FIX: mMTC maxThrMbps raised from 2.0 → 8.0 Mbps.
@@ -312,10 +313,9 @@ main(int argc, char* argv[])
     // URLLC (maxThr=10 >> expected≈5), where maxThr is set well above the
     // expected aggregate to avoid saturation.
     // -----------------------------------------------------------------------
-    cfg.maxThrMbps   = {100.0, 25.0, 8.0};   // FIX: was {100.0, 10.0, 2.0}
-
-    cfg.maxLatMs     = {50.0,  15.0, 500.0};
-    cfg.minThrMbps   = {10.0,  1.0,  0.1};
+    cfg.maxThrMbps      = {240.0, 75.0, 8.0}; // 20×12, 15×5, keep mMTC
+    cfg.maxLatMs        = {50.0,  10.0, 300.0};// URLLC: 3GPP 5QI=83 exact
+    cfg.minThrMbps      = {50.0,  2.0,  0.1}; // eMBB: 50, URLLC: 2, mMTC: keep
 
     std::array<NetDeviceContainer, NrSliceGymEnv::kSliceCount> ueDevsBySlice{
         embbDevs, urllcDevs, mmtcDevs};
