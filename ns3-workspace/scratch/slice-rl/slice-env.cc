@@ -419,6 +419,21 @@ NrSliceGymEnv::ApplySliceWeights()
         1.0 / static_cast<double>(
             std::max<uint32_t>(1, m_cfg.totalPrbs));
 
+          // Safety net for scheduler path that uses ueWeights.at(rnti):
+    // ensure every uint8 RNTI has non-zero LCID entries at least once.
+    if (weightsMap.empty())
+    {
+        for (uint16_t r = 1; r <= std::numeric_limits<uint8_t>::max(); ++r)
+        {
+            auto& ueWeights = weightsMap[static_cast<uint8_t>(r)];
+            for (uint16_t lc = 1; lc <= std::numeric_limits<uint8_t>::max(); ++lc)
+            {
+                ueWeights[static_cast<uint8_t>(lc)] = static_cast<float>(defaultWeight);
+            }
+        }
+    }
+     
+
     //
     // ----------------------------------------------------------------
     // Phase 1:
@@ -464,11 +479,11 @@ NrSliceGymEnv::ApplySliceWeights()
         auto& ueWeights =
             weightsMap[static_cast<uint8_t>(rnti16)];
 
-        // Prepopulate common NR LCIDs.
+        // Prepopulate full non-zero LCID space.
         // LCID 0 intentionally skipped (control/signaling).
-        for (uint8_t lc = 1; lc <= 4; ++lc)
+        for (uint16_t lc = 1; lc <= std::numeric_limits<uint8_t>::max(); ++lc)
         {
-            ueWeights[lc] =
+            ueWeights[static_cast<uint8_t>(lc)] =
                 static_cast<float>(weight);
         }
     }
